@@ -203,7 +203,7 @@ class PDFOperationParser:
                         text = current_token[1:-1].decode('utf-8', errors='replace')
                         if DEBUG:
                             print(f"Found text part: {text}")
-                        text_parts.append(text.strip())  # Strip any extra spaces from each part
+                        text_parts.append(text)
                     
                     i += 1
                 
@@ -1028,7 +1028,10 @@ if __name__ == "__main__":
     try:
         cmyk_colors, rgb_colors, out_of_bounds_cmyk, out_of_bounds_rgb = extract_color_values(args.pdf_file, debug=args.debug)
         
-        result = {"pages": {}}
+        result = {"pages": {}, "colors_in_bounds": []}
+        
+        # Track unique in-bounds colors
+        seen_in_bounds = set()
         
         # Debug output
         if args.debug:
@@ -1091,12 +1094,27 @@ if __name__ == "__main__":
         
         # Group by page
         for color, opacity, pages, colorspace, out_of_bounds, rects, ops in all_colors:  # Note: added ops
+            # Add to colors_in_bounds if not out of bounds and not seen before
+            if not out_of_bounds and any(rect is not None for rect in rects):  # Only include if it has valid bounds
+                color_key = (tuple(color), opacity, colorspace)
+                if color_key not in seen_in_bounds:
+                    seen_in_bounds.add(color_key)
+                    result["colors_in_bounds"].append({
+                        "colorspace": colorspace,
+                        "value": list(color),
+                        "opacity": opacity
+                    })
+            
             for page in pages:
                 if str(page) not in result["pages"]:
                     result["pages"][str(page)] = {"colors": []}
                 
                 # Create a color entry for each rectangle or text position
                 for rect, op in zip(rects, ops):  # Pair rects with ops
+                    # Skip if there are no bounds
+                    if rect is None:
+                        continue
+
                     color_info = {
                         "colorspace": colorspace,
                         "value": list(color),
@@ -1104,31 +1122,33 @@ if __name__ == "__main__":
                         "out_of_bounds": out_of_bounds
                     }
                     
-                    # Add bounds if they exist
-                    if rect is not None:
-                        try:
-                            if isinstance(rect, tuple) and len(rect) == 2:  # Text position
-                                x, y = rect
-                                color_info["bounds"] = {
-                                    "x": pt_to_mm(x),
-                                    "y": pt_to_mm(y),
-                                    "type": "text"
-                                }
-                                # Add text content if available
-                                if op['type'] == 'text' and 'text_content' in op:
-                                    color_info["text"] = op['text_content']
-                            elif isinstance(rect, tuple) and len(rect) == 4:  # Rectangle
-                                x, y, w, h = rect
-                                color_info["bounds"] = {
-                                    "x": pt_to_mm(x),
-                                    "y": pt_to_mm(y),
-                                    "width": pt_to_mm(w),
-                                    "height": pt_to_mm(h),
-                                    "type": "rectangle"
-                                }
-                        except Exception as e:
-                            if args.debug:
-                                print(f"Error processing bounds {rect}: {e}", file=sys.stderr)
+                    try:
+                        if isinstance(rect, tuple) and len(rect) == 2:  # Text position
+                            x, y = rect
+                            color_info["bounds"] = {
+                                "x": pt_to_mm(x),
+                                "y": pt_to_mm(y),
+                                "type": "text"
+                            }
+                            # Add text content if available
+                            if op['type'] == 'text' and 'text_content' in op:
+                                color_info["text"] = op['text_content']
+                        elif isinstance(rect, tuple) and len(rect) == 4:  # Rectangle
+                            x, y, w, h = rect
+                            color_info["bounds"] = {
+                                "x": pt_to_mm(x),
+                                "y": pt_to_mm(y),
+                                "width": pt_to_mm(w),
+                                "height": pt_to_mm(h),
+                                "type": "rectangle"
+                            }
+                        else:
+                            # Skip if rect is not in the expected format
+                            continue
+                    except Exception as e:
+                        if args.debug:
+                            print(f"Error processing bounds {rect}: {e}", file=sys.stderr)
+                        continue
                     
                     result["pages"][str(page)]["colors"].append(color_info)
         
