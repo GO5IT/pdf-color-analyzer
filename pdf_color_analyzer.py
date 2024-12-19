@@ -780,21 +780,22 @@ def extract_color_values(pdf_path, debug=False):
                 # Get the current rectangle from the operation
                 current_rect = op.get('current_rect')
                 if DEBUG and current_rect:
-                    print(f"Processing operation with rectangle: {current_rect}")
+                    print(f"Processing operation with rectangle/position: {current_rect}")
                 
-                # For text operations, we don't need bounds checking
-                position_in_bounds = True if op['type'] == 'text' else False
-                
-                # If we have a rectangle and it's not a text operation, check bounds
-                if current_rect and op['type'] != 'text':
-                    x, y, w, h = current_rect
-                    if DEBUG:
-                        print(f"Checking rectangle: origin=({pt_to_mm(x)}mm, {pt_to_mm(y)}mm), size=({pt_to_mm(w)}mm, {pt_to_mm(h)}mm)")
-                        print(f"Corners (mm): [{pt_to_mm(x)}, {pt_to_mm(y)}), ({pt_to_mm(x+w)}, {pt_to_mm(y)}), ({pt_to_mm(x)}, {pt_to_mm(y+h)}), ({pt_to_mm(x+w)}, {pt_to_mm(y+h)})]")
-                    
-                    # Get MediaBox for bounds checking
+                # For text operations, check if the position is within bounds
+                position_in_bounds = True
+                if op['type'] == 'text' and current_rect:
+                    x, y = current_rect
                     if hasattr(page, 'MediaBox'):
-                        box = [float(x) for x in page.MediaBox]
+                        box = page.MediaBox
+                        position_in_bounds = is_position_within_bounds(x, y, box)
+                        if DEBUG:
+                            print(f"Text position in bounds: {position_in_bounds}")
+                # For rectangles, use the existing bounds checking
+                elif current_rect and len(current_rect) == 4:
+                    x, y, w, h = current_rect
+                    if hasattr(page, 'MediaBox'):
+                        box = page.MediaBox
                         position_in_bounds = is_rectangle_within_bounds(x, y, w, h, box)
                 
                 # Get opacity from graphics state if available
@@ -821,25 +822,39 @@ def extract_color_values(pdf_path, debug=False):
                     color_key = (color, effective_opacity)
                     if position_in_bounds:
                         if DEBUG:
-                            print(f"Adding CMYK color {color} with rect {current_rect}")
+                            print(f"Adding CMYK color {color} with rect/position {current_rect}")
                         if color_key not in cmyk_colors:
                             cmyk_colors[color_key] = ([], [])
                         if page_num not in cmyk_colors[color_key][0]:
                             cmyk_colors[color_key][0].append(page_num)
-                        if current_rect or op['type'] == 'text':  # Add None for text operations
-                            cmyk_colors[color_key][1].append(current_rect)
+                        cmyk_colors[color_key][1].append(current_rect)
+                    else:
+                        if DEBUG:
+                            print(f"Adding out-of-bounds CMYK color {color} with rect/position {current_rect}")
+                        if color_key not in out_of_bounds_cmyk:
+                            out_of_bounds_cmyk[color_key] = ([], [])
+                        if page_num not in out_of_bounds_cmyk[color_key][0]:
+                            out_of_bounds_cmyk[color_key][0].append(page_num)
+                        out_of_bounds_cmyk[color_key][1].append(current_rect)
                 elif op['color_space'] == 'RGB':
                     color = tuple(round(c * 255) for c in color)
                     color_key = (color, effective_opacity)
                     if position_in_bounds:
                         if DEBUG:
-                            print(f"Adding RGB color {color} with rect {current_rect}")
+                            print(f"Adding RGB color {color} with rect/position {current_rect}")
                         if color_key not in rgb_colors:
                             rgb_colors[color_key] = ([], [])
                         if page_num not in rgb_colors[color_key][0]:
                             rgb_colors[color_key][0].append(page_num)
-                        if current_rect or op['type'] == 'text':  # Add None for text operations
-                            rgb_colors[color_key][1].append(current_rect)
+                        rgb_colors[color_key][1].append(current_rect)
+                    else:
+                        if DEBUG:
+                            print(f"Adding out-of-bounds RGB color {color} with rect/position {current_rect}")
+                        if color_key not in out_of_bounds_rgb:
+                            out_of_bounds_rgb[color_key] = ([], [])
+                        if page_num not in out_of_bounds_rgb[color_key][0]:
+                            out_of_bounds_rgb[color_key][0].append(page_num)
+                        out_of_bounds_rgb[color_key][1].append(current_rect)
             
                 # Pop the current opacity from the stack
                 opacity_context.pop_opacity()
