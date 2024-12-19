@@ -501,6 +501,15 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
     return parser.parse_args()
 
+def _add_color_to_dict(color_dict, color_key, page_num, current_rect, op):
+    """Add color operation to a dictionary"""
+    if color_key not in color_dict:
+        color_dict[color_key] = ([], [], [])
+    if page_num not in color_dict[color_key][0]:
+        color_dict[color_key][0].append(page_num)
+    color_dict[color_key][1].append(current_rect)
+    color_dict[color_key][2].append(op)
+
 def extract_color_values(pdf_path, debug=False):
     """Extract color values from PDF file"""
     global DEBUG
@@ -669,48 +678,18 @@ def extract_color_values(pdf_path, debug=False):
                 if DEBUG:
                     print(f"Opacity calculation: {' * '.join(f'{op}%' for op in opacity_context.opacity_stack)} = {effective_opacity}%")
                 
-                if op['color_space'] == 'CMYK':
-                    color = tuple(round(c * 100) for c in color)
+                if op['color_space'] in ['CMYK', 'RGB']:
+                    # Color space specific multiplier and target dict
+                    multiplier = 100 if op['color_space'] == 'CMYK' else 255
+                    target_dict = (cmyk_colors if position_in_bounds else out_of_bounds_cmyk) if op['color_space'] == 'CMYK' else (rgb_colors if position_in_bounds else out_of_bounds_rgb)
+                    
+                    color = tuple(round(c * multiplier) for c in color)
                     color_key = (color, effective_opacity)
-                    if position_in_bounds:
-                        if DEBUG:
-                            print(f"Adding CMYK color {color} with rect/position {current_rect}")
-                        if color_key not in cmyk_colors:
-                            cmyk_colors[color_key] = ([], [], [])  # Add list for operations
-                        if page_num not in cmyk_colors[color_key][0]:
-                            cmyk_colors[color_key][0].append(page_num)
-                        cmyk_colors[color_key][1].append(current_rect)
-                        cmyk_colors[color_key][2].append(op)  # Store the operation
-                    else:
-                        if DEBUG:
-                            print(f"Adding out-of-bounds CMYK color {color} with rect/position {current_rect}")
-                        if color_key not in out_of_bounds_cmyk:
-                            out_of_bounds_cmyk[color_key] = ([], [], [])  # Add list for operations
-                        if page_num not in out_of_bounds_cmyk[color_key][0]:
-                            out_of_bounds_cmyk[color_key][0].append(page_num)
-                        out_of_bounds_cmyk[color_key][1].append(current_rect)
-                        out_of_bounds_cmyk[color_key][2].append(op)  # Store the operation
-                elif op['color_space'] == 'RGB':
-                    color = tuple(round(c * 255) for c in color)
-                    color_key = (color, effective_opacity)
-                    if position_in_bounds:
-                        if DEBUG:
-                            print(f"Adding RGB color {color} with rect/position {current_rect}")
-                        if color_key not in rgb_colors:
-                            rgb_colors[color_key] = ([], [], [])  # Add list for operations
-                        if page_num not in rgb_colors[color_key][0]:
-                            rgb_colors[color_key][0].append(page_num)
-                        rgb_colors[color_key][1].append(current_rect)
-                        rgb_colors[color_key][2].append(op)  # Store the operation
-                    else:
-                        if DEBUG:
-                            print(f"Adding out-of-bounds RGB color {color} with rect/position {current_rect}")
-                        if color_key not in out_of_bounds_rgb:
-                            out_of_bounds_rgb[color_key] = ([], [], [])  # Add list for operations
-                        if page_num not in out_of_bounds_rgb[color_key][0]:
-                            out_of_bounds_rgb[color_key][0].append(page_num)
-                        out_of_bounds_rgb[color_key][1].append(current_rect)
-                        out_of_bounds_rgb[color_key][2].append(op)  # Store the operation
+                    
+                    if DEBUG:
+                        print(f"Adding {'in-bounds' if position_in_bounds else 'out-of-bounds'} {op['color_space']} color {color} with rect/position {current_rect}")
+                    
+                    _add_color_to_dict(target_dict, color_key, page_num, current_rect, op)
             
                 # Pop the current opacity from the stack
                 opacity_context.pop_opacity()
@@ -817,6 +796,24 @@ def extract_color_values(pdf_path, debug=False):
     
     return dict(cmyk_colors), dict(rgb_colors), dict(out_of_bounds_cmyk), dict(out_of_bounds_rgb)
 
+def _process_color_dict(color_dict, color_space, is_out_of_bounds):
+    """Process a color dictionary and return list of unique color operations"""
+    results = []
+    for (color, opacity), (pages, rects, ops) in color_dict.items():
+        unique_rects = []
+        unique_ops = []
+        seen = set()
+        
+        for rect, op in zip(rects, ops):
+            rect_tuple = tuple(rect) if rect else None
+            if rect_tuple not in seen:
+                seen.add(rect_tuple)
+                unique_rects.append(rect)
+                unique_ops.append(op)
+        
+        results.append((color, opacity, pages, color_space, is_out_of_bounds, unique_rects, unique_ops))
+    return results
+
 if __name__ == "__main__":
     args = parse_args()
     try:
@@ -835,56 +832,10 @@ if __name__ == "__main__":
         
         # Combine all colors into page-based structure
         all_colors = []
-        # Add CMYK colors
-        for (color, opacity), (pages, rects, ops) in cmyk_colors.items():  # Note: added ops
-            unique_rects = []
-            unique_ops = []  # Add this
-            seen = set()
-            for rect, op in zip(rects, ops):  # Pair rects with ops
-                rect_tuple = tuple(rect) if rect else None
-                if rect_tuple not in seen:
-                    seen.add(rect_tuple)
-                    unique_rects.append(rect)
-                    unique_ops.append(op)  # Store corresponding operation
-            all_colors.append((color, opacity, pages, "CMYK", False, unique_rects, unique_ops))  # Add ops
-        
-        # Add RGB colors (similar changes)
-        for (color, opacity), (pages, rects, ops) in rgb_colors.items():
-            unique_rects = []
-            unique_ops = []  # Add this
-            seen = set()
-            for rect, op in zip(rects, ops):  # Pair rects with ops
-                rect_tuple = tuple(rect) if rect else None
-                if rect_tuple not in seen:
-                    seen.add(rect_tuple)
-                    unique_rects.append(rect)
-                    unique_ops.append(op)  # Store corresponding operation
-            all_colors.append((color, opacity, pages, "RGB", False, unique_rects, unique_ops))  # Add ops
-        
-        # Add out of bounds colors (similar changes)
-        for (color, opacity), (pages, rects, ops) in out_of_bounds_cmyk.items():
-            unique_rects = []
-            unique_ops = []  # Add this
-            seen = set()
-            for rect, op in zip(rects, ops):  # Pair rects with ops
-                rect_tuple = tuple(rect) if rect else None
-                if rect_tuple not in seen:
-                    seen.add(rect_tuple)
-                    unique_rects.append(rect)
-                    unique_ops.append(op)  # Store corresponding operation
-            all_colors.append((color, opacity, pages, "CMYK", True, unique_rects, unique_ops))  # Add ops
-        
-        for (color, opacity), (pages, rects, ops) in out_of_bounds_rgb.items():
-            unique_rects = []
-            unique_ops = []  # Add this
-            seen = set()
-            for rect, op in zip(rects, ops):  # Pair rects with ops
-                rect_tuple = tuple(rect) if rect else None
-                if rect_tuple not in seen:
-                    seen.add(rect_tuple)
-                    unique_rects.append(rect)
-                    unique_ops.append(op)  # Store corresponding operation
-            all_colors.append((color, opacity, pages, "RGB", True, unique_rects, unique_ops))  # Add ops
+        all_colors.extend(_process_color_dict(cmyk_colors, "CMYK", False))
+        all_colors.extend(_process_color_dict(rgb_colors, "RGB", False))
+        all_colors.extend(_process_color_dict(out_of_bounds_cmyk, "CMYK", True))
+        all_colors.extend(_process_color_dict(out_of_bounds_rgb, "RGB", True))
         
         # Group by page
         for color, opacity, pages, colorspace, out_of_bounds, rects, ops in all_colors:  # Note: added ops
