@@ -7,9 +7,6 @@ import argparse
 
 DEBUG = False
 
-# At the top of the file, add these globals
-_processed_streams = set()
-_processed_xobjects = {}  # Dictionary to track XObjects per page
 
 def pt_to_mm(pt):
     """Convert points to millimeters"""
@@ -43,7 +40,6 @@ def get_color_spaces_from_resources(resources):
                     if isinstance(resources[key], dict):
                         for subkey, value in resources[key].items():
                             print(f"  {subkey}: {value}")
-                            # If it's a nested dictionary, go deeper
                             if isinstance(value, dict):
                                 for k, v in value.items():
                                     print(f"    {k}: {v}")
@@ -53,23 +49,12 @@ def get_color_spaces_from_resources(resources):
                     print(f"  Error accessing resource: {e}")
         
         if '/ColorSpace' in resources:
-            # if DEBUG:
-            #     print("\nColorSpace entries:", resources['/ColorSpace'].keys())
-            #     print("ColorSpace values:")
-            #     for name, value in resources['/ColorSpace'].items():
-            #         print(f"  {name}: {value}")
-            
             for cs_name, cs_value in resources['/ColorSpace'].items():
-                # if DEBUG:
-                #     print(f"\nProcessing color space {cs_name}: {cs_value}")
-                #     print(f"Type: {type(cs_value)}")
-                
                 try:
                     # Convert pikepdf.Object to list if possible
                     if isinstance(cs_value, (list, tuple)):
                         array_items = cs_value
                     else:
-                        # Try to convert pikepdf.Object to list
                         try:
                             array_items = list(cs_value)
                         except Exception as e:
@@ -594,183 +579,6 @@ def extract_color_values(pdf_path, debug=False):
         except (ValueError, TypeError):
             return False
     
-    def analyze_color_context(content_stream, position, page):
-        """Analyze the context around a color operation"""
-        # Get the context around this color operation
-        context_before = content_stream[max(0, position-500):position]
-        context_after = content_stream[position:position+1000]
-        
-        # Parse the operations
-        parser = PDFOperationParser()
-        context = parser.parse_operations(context_after)
-        
-        # Add the opacity calculations
-        current_opacity = 100
-        parent_opacity = getattr(page, 'parent_opacity', 100)
-        frame_opacity = getattr(page, 'frame_opacity', 100)
-        
-        # Calculate effective opacity by multiplying the entire chain
-        effective_opacity = round((current_opacity * parent_opacity * frame_opacity) / 10000)
-        
-        if DEBUG:
-            print("\nOpacity Calculation Debug:")
-            print(f"Current GS opacity: {current_opacity}%")
-            print(f"Parent opacity: {parent_opacity}%")
-            print(f"Frame opacity: {frame_opacity}%")
-            print(f"Effective opacity: {effective_opacity}%")
-            print(f"Is nested: {hasattr(page, 'frame_opacity')}")
-        
-        text_in_bounds = False
-        path_in_bounds = False
-        rect_in_bounds = False
-        
-        is_text = False
-        text_info = []
-        text_position = None
-        if b'BT' in context_before:
-            is_text = True
-            # Try to find text positioning
-            text_matrix = re.findall(
-                rb'([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+Tm',
-                context_before
-            )
-            if text_matrix:
-                for matrix in text_matrix:
-                    x, y = float(matrix[4]), float(matrix[5])
-                    text_position = (x, y)
-                    if DEBUG:
-                        print(f"Text position: ({pt_to_mm(x)}mm, {pt_to_mm(y)}mm)")
-                    # For text, check if the position is within bounds
-                    if x >= float(box[0]) and x <= float(box[2]) and y >= float(box[1]) and y <= float(box[3]):
-                        text_in_bounds = True
-                        if DEBUG:
-                            print(f"Text is within bounds")
-                    text_info.append(f"Text matrix: scale=({matrix[0]},{matrix[3]}), skew=({matrix[1]},{matrix[2]}), position=({pt_to_mm(x)}mm, {pt_to_mm(y)}mm)")
-            
-            # Look for text content
-            text_showing = re.findall(rb'\((.*?)\)[\s]*Tj', context_after[:100])
-            if text_showing:
-                text_info.append(f"Text content: {text_showing[0]}")
-        
-        # Look for path operations
-        path_ops = []
-        for match in re.finditer(rb'([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([mlcvy])', context_before):
-            x, y, op = match.groups()
-            if is_position_within_bounds(x, y, box):
-                path_in_bounds = True
-            op_name = {
-                b'm': 'moveto',
-                b'l': 'lineto',
-                b'c': 'curveto',
-                b'v': 'curve',
-                b'y': 'curve'
-            }.get(op, 'unknown')
-            path_ops.append(f"{op_name} at ({pt_to_mm(x)}mm, {pt_to_mm(y)}mm)")
-        
-        # Look for rectangle definitions in both before and after color
-        rect_ops = []
-        for match in re.finditer(
-            rb'([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+([-+]?(?:\d*\.\d+|\d+\.?))[\s]+re',
-            content_stream[max(0, position - 500):position + 1000]
-        ):
-            x, y, w, h = match.groups()
-            if is_rectangle_within_bounds(x, y, w, h, box):
-                rect_in_bounds = True
-                if DEBUG:
-                    print(f"Found rectangle within bounds: origin=({pt_to_mm(x)}mm, {pt_to_mm(y)}mm), size=({pt_to_mm(w)}mm, {pt_to_mm(h)}mm)")
-            rect_ops.append(f"Rectangle: origin=({pt_to_mm(x)}mm, {pt_to_mm(y)}mm), size=({pt_to_mm(w)}mm, {pt_to_mm(h)}mm)")
-        
-        # Determine if the color is within bounds based on operation type
-        position_in_bounds = False
-        if is_text:
-            position_in_bounds = text_in_bounds
-        elif rect_ops:
-            position_in_bounds = rect_in_bounds
-        elif path_ops:
-            position_in_bounds = path_in_bounds
-        
-        if DEBUG:
-            print(f"Position in bounds: {position_in_bounds}")
-            if rect_ops:
-                print(f"Rectangle operations found: {rect_ops}")
-        
-        # Look for rendering operators after the color
-        render_ops = []
-        for op in re.finditer(rb'[fFSsBb\*]', context_after[:50]):
-            op_name = {
-                b'f': 'fill',
-                b'F': 'fill',
-                b'S': 'stroke',
-                b's': 'close and stroke',
-                b'b': 'close, fill, and stroke',
-                b'B': 'fill and stroke',
-                b'b*': 'close, fill*, and stroke',
-                b'B*': 'fill* and stroke'
-            }.get(op.group(), 'unknown')
-            render_ops.append(op_name)
-        
-        # Look for path construction and fill operations more thoroughly
-        path_ops = re.findall(rb'[0-9.-]+\s+[0-9.-]+\s+[mc][\s\n]|[lh][\s\n]', context_after[:1000])
-        path_fill = bool(re.search(rb'[fFS][\s\n]', context_after[len(path_ops[0]) if path_ops else 0:1000]))
-        
-        # Look for clipping operations more precisely
-        is_clipping = bool(re.search(rb're\s*W\s*n', context_after[:100]))
-        
-        # Look for container setup (q ... re W n)
-        is_container = bool(re.search(rb'q.*re\s*W\s*n', context_after[:100]))
-        
-        # Check if this is an actual fill/stroke operation that's not part of a clipping path
-        has_fill = (bool(re.search(rb're\s*f(?!\s*W)', context_after[:50])) or  # Rectangle fill (not followed by W)
-                   bool(re.search(rb'h\s*f(?!\s*W)', context_after[:1000])) or   # Path fill (not followed by W)
-                   (bool(path_ops) and path_fill and not is_clipping))           # Complex path with fill (not clipping)
-        
-        has_stroke = (bool(re.search(rb're\s*S(?!\s*W)', context_after[:50])) or  # Rectangle stroke (not followed by W)
-                     bool(re.search(rb'h\s*S(?!\s*W)', context_after[:1000])))    # Path stroke (not followed by W)
-        
-        # Look for color space changes that might indicate actual content
-        has_color_space = bool(re.search(rb'/CS\d+\s+cs', context_after[:50]))
-        
-        # Look for XObject operations
-        has_xobject = bool(re.search(rb'/Fm\d+\s+Do', context_after[:50]))
-        
-        # Look for color space operations
-        color_space_ops = re.findall(rb'/CS\d+\s+cs\s+[0-9.-]+\s+scn', context_after[:100])
-        
-        # Look for XObject usage (Do operator) specifically in this context
-        has_xobject_usage = bool(re.search(rb'/Fm\d+\s+Do', context_after[:50]))
-        
-        if DEBUG and rect_ops:
-            print("Rectangle operations (mm):")
-            for rect in rect_ops:
-                # Convert bytes pattern to string pattern
-                nums = re.findall(r'[-+]?(?:\d*\.\d+|\d+\.?)', str(rect))
-                if len(nums) >= 4:
-                    x, y = pt_to_mm(float(nums[0])), pt_to_mm(float(nums[1]))
-                    w, h = pt_to_mm(float(nums[2])), pt_to_mm(float(nums[3]))
-                    print(f"  Origin: ({x}mm, {y}mm), Size: {w}mm x {h}mm")
-        
-        # Store the calculated opacities in the context
-        context = {
-            'is_clipping': is_clipping,
-            'is_container': is_container,
-            'in_clipping_sequence': in_clipping_sequence,
-            'has_fill': has_fill,
-            'has_stroke': has_stroke,
-            'has_xobject': has_xobject_usage,  # Use the specific usage check
-            'color_space_ops': color_space_ops,
-            'path_ops': path_ops,
-            'path_fill': path_fill,
-            'render_ops': render_ops,
-            'rect_ops': rect_ops,
-            'position_in_bounds': position_in_bounds,
-            'current_opacity': current_opacity,
-            'parent_opacity': parent_opacity,
-            'frame_opacity': frame_opacity,
-            'effective_opacity': effective_opacity
-        }
-        
-        return context
-    
     def process_content_stream(content_stream, page, page_num, opacity_context=None):
         """Process a content stream for colors"""
         if opacity_context is None:
@@ -791,11 +599,8 @@ def extract_color_values(pdf_path, debug=False):
             elif group_cs == '/DeviceGray':
                 color_spaces['__default__'] = 'Gray'
         
-        content_id = (page_num, id(content_stream))
-        _processed_streams.add(content_id)
-        
         if DEBUG:
-            print(f"\n--- Processing content stream {content_id} ---")
+            print(f"\n--- Processing content stream ---")
             if hasattr(page, 'MediaBox'):
                 box = page.MediaBox
                 print(f"MediaBox: {pt_to_mm(box[0])}mm, {pt_to_mm(box[1])}mm, {pt_to_mm(box[2])}mm, {pt_to_mm(box[3])}mm")
@@ -1002,26 +807,6 @@ def extract_color_values(pdf_path, debug=False):
                 traceback.print_exc()
     
     return dict(cmyk_colors), dict(rgb_colors), dict(out_of_bounds_cmyk), dict(out_of_bounds_rgb)
-
-def convert_to_cmyk(numbers, sequence):
-    """Convert color values to CMYK format"""
-    # Handle grayscale to CMYK conversion
-    if b'g' in sequence:
-        gray = float(numbers[0])
-        # Convert grayscale to CMYK (0 g = 0 0 0 100 k)
-        k = round((1 - gray) * 100)
-        if DEBUG:
-            print(f"Converted grayscale {gray} to CMYK: (0, 0, 0, {k})")
-        return (0, 0, 0, k)
-    
-    # Convert string numbers to floats and scale to percentages
-    values = [round(float(n) * 100) for n in numbers]
-    
-    # Ensure we have 4 values for CMYK
-    while len(values) < 4:
-        values.append(0)
-    
-    return tuple(values[:4])
 
 if __name__ == "__main__":
     args = parse_args()
