@@ -156,17 +156,25 @@ class PDFOperationParser:
         self.graphics_state = None
         self.current_rect = None
         self.color_spaces = color_spaces or {}
-        self.in_text_block = False  # Add this to track text blocks
-        self.current_text_position = None  # Add this to track text position
+        self.in_text_block = False
+        self.current_text_position = None
+        self.current_text_content = None
         
-        # Use default color space if available
         if '__default__' in self.color_spaces:
             self.color_space = self.color_spaces['__default__']
             if DEBUG:
                 print(f"Using default color space: {self.color_space}")
     
     def parse_operations(self, content):
-        tokens = re.findall(rb'[+-]?(?:\d*\.\d+|\d+\.?)|/\w+|[A-Za-z]+|[\[\]{}()]|\s+', content)
+        # Modified regex to capture all token types while keeping parenthetical content together
+        tokens = re.findall(rb'''
+            \([^)]*\)          # Text content in parentheses
+            |/\w+              # Names starting with /
+            |[-+]?\d*\.?\d+   # Numbers (integer or float)
+            |[A-Za-z]+         # Operators
+            |[\[\]{}()]        # Other special characters
+            |\s+               # Whitespace
+        ''', content, re.VERBOSE)
         
         if DEBUG:
             print("\nAll tokens:")
@@ -179,8 +187,54 @@ class PDFOperationParser:
                 i += 1
                 continue
             
+            # When processing text arrays
+            if token == b'[':
+                if DEBUG:
+                    print("Starting text array processing")
+                text_parts = []
+                i += 1
+                
+                while i < len(tokens) and tokens[i].strip() != b']':
+                    current_token = tokens[i].strip()
+                    
+                    # Check if this is a text string (starts with parenthesis)
+                    if current_token.startswith(b'(') and current_token.endswith(b')'):
+                        # Remove the parentheses and decode
+                        text = current_token[1:-1].decode('utf-8', errors='replace')
+                        if DEBUG:
+                            print(f"Found text part: {text}")
+                        text_parts.append(text.strip())  # Strip any extra spaces from each part
+                    
+                    i += 1
+                
+                # Join text parts without extra spaces
+                self.current_text_content = ''.join(text_parts).replace('  ', ' ').strip()
+                if DEBUG:
+                    print(f"Assembled text content: {self.current_text_content}")
+            
+            # When adding text operations
+            elif token in [b'Tj', b'TJ']:
+                if DEBUG:
+                    print(f"Text operation with {self.color_space} color {self.current_color}")
+                    print(f"Text position: {self.current_text_position}")
+                    print(f"Text content: {self.current_text_content}")
+                
+                operation = {
+                    'type': 'text',
+                    'color': self.current_color,
+                    'color_space': self.color_space,
+                    'graphics_state': self.graphics_state,
+                    'current_rect': self.current_text_position,
+                    'text_position': self.current_text_position,
+                    'text_content': self.current_text_content
+                }
+                self.operations.append(operation)
+                if DEBUG:
+                    print(f"Added operation with text: {self.current_text_content}")
+                self.current_text_content = None  # Reset text content
+            
             # Track text blocks
-            if token == b'BT':
+            elif token == b'BT':
                 self.in_text_block = True
                 if DEBUG:
                     print("Entering text block")
@@ -384,22 +438,6 @@ class PDFOperationParser:
                     self.current_text_position = (e, f)
                     if DEBUG:
                         print(f"Text position set to: ({pt_to_mm(e)}mm, {pt_to_mm(f)}mm)")
-            
-            # When adding text operations
-            elif token in [b'Tj', b'TJ']:
-                if DEBUG:
-                    print(f"Text operation with {self.color_space} color {self.current_color}")
-                    print(f"Text position: {self.current_text_position}")
-                
-                operation = {
-                    'type': 'text',
-                    'color': self.current_color,
-                    'color_space': self.color_space,
-                    'graphics_state': self.graphics_state,
-                    'current_rect': self.current_text_position,
-                    'text_position': self.current_text_position
-                }
-                self.operations.append(operation)
             
             # When adding a fill or stroke operation
             elif token in [b'f', b'F', b'S', b's', b'B', b'b', b'b*', b'B*', b'Tj', b'TJ']:
@@ -824,18 +862,20 @@ def extract_color_values(pdf_path, debug=False):
                         if DEBUG:
                             print(f"Adding CMYK color {color} with rect/position {current_rect}")
                         if color_key not in cmyk_colors:
-                            cmyk_colors[color_key] = ([], [])
+                            cmyk_colors[color_key] = ([], [], [])  # Add list for operations
                         if page_num not in cmyk_colors[color_key][0]:
                             cmyk_colors[color_key][0].append(page_num)
                         cmyk_colors[color_key][1].append(current_rect)
+                        cmyk_colors[color_key][2].append(op)  # Store the operation
                     else:
                         if DEBUG:
                             print(f"Adding out-of-bounds CMYK color {color} with rect/position {current_rect}")
                         if color_key not in out_of_bounds_cmyk:
-                            out_of_bounds_cmyk[color_key] = ([], [])
+                            out_of_bounds_cmyk[color_key] = ([], [], [])  # Add list for operations
                         if page_num not in out_of_bounds_cmyk[color_key][0]:
                             out_of_bounds_cmyk[color_key][0].append(page_num)
                         out_of_bounds_cmyk[color_key][1].append(current_rect)
+                        out_of_bounds_cmyk[color_key][2].append(op)  # Store the operation
                 elif op['color_space'] == 'RGB':
                     color = tuple(round(c * 255) for c in color)
                     color_key = (color, effective_opacity)
@@ -843,18 +883,20 @@ def extract_color_values(pdf_path, debug=False):
                         if DEBUG:
                             print(f"Adding RGB color {color} with rect/position {current_rect}")
                         if color_key not in rgb_colors:
-                            rgb_colors[color_key] = ([], [])
+                            rgb_colors[color_key] = ([], [], [])  # Add list for operations
                         if page_num not in rgb_colors[color_key][0]:
                             rgb_colors[color_key][0].append(page_num)
                         rgb_colors[color_key][1].append(current_rect)
+                        rgb_colors[color_key][2].append(op)  # Store the operation
                     else:
                         if DEBUG:
                             print(f"Adding out-of-bounds RGB color {color} with rect/position {current_rect}")
                         if color_key not in out_of_bounds_rgb:
-                            out_of_bounds_rgb[color_key] = ([], [])
+                            out_of_bounds_rgb[color_key] = ([], [], [])  # Add list for operations
                         if page_num not in out_of_bounds_rgb[color_key][0]:
                             out_of_bounds_rgb[color_key][0].append(page_num)
                         out_of_bounds_rgb[color_key][1].append(current_rect)
+                        out_of_bounds_rgb[color_key][2].append(op)  # Store the operation
             
                 # Pop the current opacity from the stack
                 opacity_context.pop_opacity()
@@ -997,56 +1039,64 @@ if __name__ == "__main__":
         # Combine all colors into page-based structure
         all_colors = []
         # Add CMYK colors
-        for (color, opacity), (pages, rects) in cmyk_colors.items():
+        for (color, opacity), (pages, rects, ops) in cmyk_colors.items():  # Note: added ops
             unique_rects = []
+            unique_ops = []  # Add this
             seen = set()
-            for rect in rects:
+            for rect, op in zip(rects, ops):  # Pair rects with ops
                 rect_tuple = tuple(rect) if rect else None
                 if rect_tuple not in seen:
                     seen.add(rect_tuple)
                     unique_rects.append(rect)
-            all_colors.append((color, opacity, pages, "CMYK", False, unique_rects))
+                    unique_ops.append(op)  # Store corresponding operation
+            all_colors.append((color, opacity, pages, "CMYK", False, unique_rects, unique_ops))  # Add ops
         
-        # Add RGB colors
-        for (color, opacity), (pages, rects) in rgb_colors.items():
+        # Add RGB colors (similar changes)
+        for (color, opacity), (pages, rects, ops) in rgb_colors.items():
             unique_rects = []
+            unique_ops = []  # Add this
             seen = set()
-            for rect in rects:
+            for rect, op in zip(rects, ops):  # Pair rects with ops
                 rect_tuple = tuple(rect) if rect else None
                 if rect_tuple not in seen:
                     seen.add(rect_tuple)
                     unique_rects.append(rect)
-            all_colors.append((color, opacity, pages, "RGB", False, unique_rects))
+                    unique_ops.append(op)  # Store corresponding operation
+            all_colors.append((color, opacity, pages, "RGB", False, unique_rects, unique_ops))  # Add ops
         
-        # Add out of bounds colors
-        for (color, opacity), (pages, rects) in out_of_bounds_cmyk.items():
+        # Add out of bounds colors (similar changes)
+        for (color, opacity), (pages, rects, ops) in out_of_bounds_cmyk.items():
             unique_rects = []
+            unique_ops = []  # Add this
             seen = set()
-            for rect in rects:
+            for rect, op in zip(rects, ops):  # Pair rects with ops
                 rect_tuple = tuple(rect) if rect else None
                 if rect_tuple not in seen:
                     seen.add(rect_tuple)
                     unique_rects.append(rect)
-            all_colors.append((color, opacity, pages, "CMYK", True, unique_rects))
+                    unique_ops.append(op)  # Store corresponding operation
+            all_colors.append((color, opacity, pages, "CMYK", True, unique_rects, unique_ops))  # Add ops
         
-        for (color, opacity), (pages, rects) in out_of_bounds_rgb.items():
+        for (color, opacity), (pages, rects, ops) in out_of_bounds_rgb.items():
             unique_rects = []
+            unique_ops = []  # Add this
             seen = set()
-            for rect in rects:
+            for rect, op in zip(rects, ops):  # Pair rects with ops
                 rect_tuple = tuple(rect) if rect else None
                 if rect_tuple not in seen:
                     seen.add(rect_tuple)
                     unique_rects.append(rect)
-            all_colors.append((color, opacity, pages, "RGB", True, unique_rects))
+                    unique_ops.append(op)  # Store corresponding operation
+            all_colors.append((color, opacity, pages, "RGB", True, unique_rects, unique_ops))  # Add ops
         
         # Group by page
-        for color, opacity, pages, colorspace, out_of_bounds, rects in all_colors:
+        for color, opacity, pages, colorspace, out_of_bounds, rects, ops in all_colors:  # Note: added ops
             for page in pages:
                 if str(page) not in result["pages"]:
                     result["pages"][str(page)] = {"colors": []}
                 
                 # Create a color entry for each rectangle or text position
-                for rect in rects:
+                for rect, op in zip(rects, ops):  # Pair rects with ops
                     color_info = {
                         "colorspace": colorspace,
                         "value": list(color),
@@ -1062,8 +1112,11 @@ if __name__ == "__main__":
                                 color_info["bounds"] = {
                                     "x": pt_to_mm(x),
                                     "y": pt_to_mm(y),
-                                    "type": "text"  # Add this to distinguish text positions
+                                    "type": "text"
                                 }
+                                # Add text content if available
+                                if op['type'] == 'text' and 'text_content' in op:
+                                    color_info["text"] = op['text_content']
                             elif isinstance(rect, tuple) and len(rect) == 4:  # Rectangle
                                 x, y, w, h = rect
                                 color_info["bounds"] = {
@@ -1071,7 +1124,7 @@ if __name__ == "__main__":
                                     "y": pt_to_mm(y),
                                     "width": pt_to_mm(w),
                                     "height": pt_to_mm(h),
-                                    "type": "rectangle"  # Add this to distinguish rectangles
+                                    "type": "rectangle"
                                 }
                         except Exception as e:
                             if args.debug:
