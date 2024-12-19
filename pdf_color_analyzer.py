@@ -4,9 +4,19 @@ import re
 from collections import defaultdict
 import json
 import argparse
+import logging
 
-DEBUG = False
+def setup_logging(debug_mode):
+    """Configure logging based on debug mode"""
+    level = logging.DEBUG if debug_mode else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format='%(message)s'
+    )
 
+def debug_log(message):
+    """Wrapper for debug logging"""
+    logging.debug(message)
 
 def pt_to_mm(pt):
     """Convert points to millimeters"""
@@ -21,8 +31,7 @@ def get_color_spaces_from_resources(resources):
         group = resources['/Group']
         if '/CS' in group:
             group_cs = str(group['/CS'])
-            if DEBUG:
-                print(f"Found Group color space: {group_cs}")
+            debug_log(f"Found Group color space: {group_cs}")
             if group_cs == '/DeviceCMYK':
                 cs_dict['__default__'] = 'CMYK'
             elif group_cs == '/DeviceRGB':
@@ -31,22 +40,21 @@ def get_color_spaces_from_resources(resources):
                 cs_dict['__default__'] = 'Gray'
     
     if resources:
-        if DEBUG:
-            print("\nResource keys available:", resources.keys())
-            print("\nDetailed Resource Contents:")
-            for key in resources.keys():
-                print(f"\n{key}:")
-                try:
-                    if isinstance(resources[key], dict):
-                        for subkey, value in resources[key].items():
-                            print(f"  {subkey}: {value}")
-                            if isinstance(value, dict):
-                                for k, v in value.items():
-                                    print(f"    {k}: {v}")
-                    else:
-                        print(f"  {resources[key]}")
-                except Exception as e:
-                    print(f"  Error accessing resource: {e}")
+        debug_log("\nResource keys available:" + str(resources.keys()))
+        debug_log("\nDetailed Resource Contents:")
+        for key in resources.keys():
+            debug_log(f"\n{key}:")
+            try:
+                if isinstance(resources[key], dict):
+                    for subkey, value in resources[key].items():
+                        debug_log(f"  {subkey}: {value}")
+                        if isinstance(value, dict):
+                            for k, v in value.items():
+                                debug_log(f"    {k}: {v}")
+                else:
+                    debug_log(f"  {resources[key]}")
+            except Exception as e:
+                debug_log(f"  Error accessing resource: {e}")
         
         if '/ColorSpace' in resources:
             for cs_name, cs_value in resources['/ColorSpace'].items():
@@ -58,13 +66,11 @@ def get_color_spaces_from_resources(resources):
                         try:
                             array_items = list(cs_value)
                         except Exception as e:
-                            if DEBUG:
-                                print(f"Could not convert to list: {e}")
+                            debug_log(f"Could not convert to list: {e}")
                             continue
                     
                     base_cs = str(array_items[0])
-                    if DEBUG:
-                        print(f"Processing array-based color space with base: {base_cs}")
+                    debug_log(f"Processing array-based color space with base: {base_cs}")
                     
                     if base_cs == '/DeviceCMYK':
                         cs_dict[cs_name] = 'CMYK'
@@ -77,8 +83,7 @@ def get_color_spaces_from_resources(resources):
                         icc_stream = array_items[1]
                         try:
                             n_components = int(icc_stream.N)
-                            if DEBUG:
-                                print(f"ICC profile with {n_components} components")
+                            debug_log(f"ICC profile with {n_components} components")
                             if n_components == 4:
                                 cs_dict[cs_name] = 'CMYK'
                             elif n_components == 3:
@@ -86,13 +91,11 @@ def get_color_spaces_from_resources(resources):
                             elif n_components == 1:
                                 cs_dict[cs_name] = 'Gray'
                         except Exception as e:
-                            if DEBUG:
-                                print(f"Error getting ICC components: {e}")
+                            debug_log(f"Error getting ICC components: {e}")
                     elif base_cs == '/DeviceN':
                         if len(array_items) >= 3:
                             alternate_cs = str(array_items[2])
-                            if DEBUG:
-                                print(f"DeviceN with alternate color space: {alternate_cs}")
+                            debug_log(f"DeviceN with alternate color space: {alternate_cs}")
                             if alternate_cs == '/DeviceCMYK':
                                 cs_dict[cs_name] = 'CMYK'
                             elif alternate_cs == '/DeviceRGB':
@@ -107,8 +110,7 @@ def get_color_spaces_from_resources(resources):
                                     process = process_dict.get('/Process')
                                     if process and '/ColorSpace' in process:
                                         process_cs = str(process['/ColorSpace'])
-                                        if DEBUG:
-                                            print(f"DeviceN process color space: {process_cs}")
+                                        debug_log(f"DeviceN process color space: {process_cs}")
                                         if process_cs == '/DeviceCMYK':
                                             cs_dict[cs_name] = 'CMYK'
                                         elif process_cs == '/DeviceRGB':
@@ -116,17 +118,14 @@ def get_color_spaces_from_resources(resources):
                                         elif process_cs == '/DeviceGray':
                                             cs_dict[cs_name] = 'Gray'
                     else:
-                        if DEBUG:
-                            print(f"Warning: Unknown color space base: {base_cs}")
+                        debug_log(f"Warning: Unknown color space base: {base_cs}")
                 except Exception as e:
-                    if DEBUG:
-                        print(f"Error processing color space {cs_name}: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
+                    debug_log(f"Error processing color space {cs_name}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
                     continue
     
-    if DEBUG:
-        print(f"\nExtracted color spaces from resources: {cs_dict}")
+    debug_log(f"\nExtracted color spaces from resources: {cs_dict}")
     return cs_dict
 
 class PDFOperationParser:
@@ -144,8 +143,7 @@ class PDFOperationParser:
         
         if '__default__' in self.color_spaces:
             self.color_space = self.color_spaces['__default__']
-            if DEBUG:
-                print(f"Using default color space: {self.color_space}")
+            debug_log(f"Using default color space: {self.color_space}")
     
     def _parse_tokens(self, content):
         """Extract tokens from PDF content stream"""
@@ -158,16 +156,14 @@ class PDFOperationParser:
             |\s+               # Whitespace
         ''', content, re.VERBOSE)
         
-        if DEBUG:
-            print("\nAll tokens:")
-            print(tokens)
+        debug_log("\nAll tokens:")
+        debug_log(tokens)
         
         return tokens
 
     def _parse_text_array(self, tokens, start_index):
         """Process a text array starting at the given index and return the assembled text and new index"""
-        if DEBUG:
-            print("Starting text array processing")
+        debug_log("Starting text array processing")
         
         text_parts = []
         i = start_index
@@ -179,29 +175,25 @@ class PDFOperationParser:
             if current_token.startswith(b'(') and current_token.endswith(b')'):
                 # Remove the parentheses and decode
                 text = current_token[1:-1].decode('utf-8', errors='replace')
-                if DEBUG:
-                    print(f"Found text part: {text}")
+                debug_log(f"Found text part: {text}")
                 text_parts.append(text)
             
             i += 1
         
         # Join text parts without extra spaces
         text_content = ''.join(text_parts).replace('  ', ' ').strip()
-        if DEBUG:
-            print(f"Assembled text content: {text_content}")
-            
+        debug_log(f"Assembled text content: {text_content}")
+        
         return text_content, i + 1  # i + 1 to skip the closing bracket
 
     def _handle_text_block(self, token):
         """Handle text block operations (BT/ET)"""
         if token == b'BT':
             self.in_text_block = True
-            if DEBUG:
-                print("Entering text block")
+            debug_log("Entering text block")
         elif token == b'ET':
             self.in_text_block = False
-            if DEBUG:
-                print("Exiting text block")
+            debug_log("Exiting text block")
 
     def _handle_text_position(self, token):
         """Handle text position operations (Tm)"""
@@ -212,15 +204,13 @@ class PDFOperationParser:
             e = self.stack.pop()  # x position
             self.stack = self.stack[:-4]  # Remove a b c d
             self.current_text_position = (e, f)
-            if DEBUG:
-                print(f"Text position set to: ({pt_to_mm(e)}mm, {pt_to_mm(f)}mm)")
+            debug_log(f"Text position set to: ({pt_to_mm(e)}mm, {pt_to_mm(f)}mm)")
 
     def _handle_text_operation(self, token):
         """Handle text showing operations (Tj/TJ)"""
-        if DEBUG:
-            print(f"Text operation with {self.color_space} color {self.current_color}")
-            print(f"Text position: {self.current_text_position}")
-            print(f"Text content: {self.current_text_content}")
+        debug_log(f"Text operation with {self.color_space} color {self.current_color}")
+        debug_log(f"Text position: {self.current_text_position}")
+        debug_log(f"Text content: {self.current_text_content}")
         
         operation = {
             'type': 'text',
@@ -234,8 +224,7 @@ class PDFOperationParser:
         
         self.operations.append(operation)
         
-        if DEBUG:
-            print(f"Added operation with text: {self.current_text_content}")
+        debug_log(f"Added operation with text: {self.current_text_content}")
         
         self.current_text_content = None  # Reset text content
 
@@ -261,8 +250,7 @@ class PDFOperationParser:
             else:
                 raise ValueError(f"Unknown color space: {color_space_name}. Available color spaces: {self.color_spaces}")
             
-            if DEBUG:
-                print(f"Color space changed to: {self.color_space} for {color_space_name}")
+            debug_log(f"Color space changed to: {self.color_space} for {color_space_name}")
             i += 1
         
         return i
@@ -275,9 +263,8 @@ class PDFOperationParser:
             y = float(self.stack.pop())
             x = float(self.stack.pop())
             self.current_rect = (x, y, w, h)  # Store the current rectangle
-            if DEBUG:
-                print(f"Rectangle: {pt_to_mm(x)}mm, {pt_to_mm(y)}mm, {pt_to_mm(w)}mm x {pt_to_mm(h)}mm")
-                print(f"Storing rectangle: {self.current_rect}")
+            debug_log(f"Rectangle: {pt_to_mm(x)}mm, {pt_to_mm(y)}mm, {pt_to_mm(w)}mm x {pt_to_mm(h)}mm")
+            debug_log(f"Storing rectangle: {self.current_rect}")
 
     def _handle_rgb_color(self, token):
         """Handle RGB color operations (rg/RG)"""
@@ -287,9 +274,8 @@ class PDFOperationParser:
             r = self.stack.pop()
             self.current_color = (r, g, b)
             self.color_space = 'RGB'
-            if DEBUG:
-                rgb_255 = tuple(round(c * 255) for c in self.current_color)
-                print(f"RGB color via {token}: {rgb_255}")
+            rgb_255 = tuple(round(c * 255) for c in self.current_color)
+            debug_log(f"RGB color via {token}: {rgb_255}")
 
     def _handle_cmyk_color(self, token, stack_size=4):
         """Handle CMYK color operations (k/K/sc/SC/scn/SCN)"""
@@ -298,8 +284,7 @@ class PDFOperationParser:
                 value = self.stack.pop()
                 if value == 1:
                     self.current_color = (0, 0, 0, 1)
-                    if DEBUG:
-                        print(f"Single value {token} interpreted as black: {self.current_color}")
+                    debug_log(f"Single value {token} interpreted as black: {self.current_color}")
                     return
                 # If not a special case, restore the value and continue with normal processing
                 self.stack.append(value)
@@ -311,8 +296,7 @@ class PDFOperationParser:
             c = self.stack.pop()
             self.current_color = (c, m, y, k)
             self.color_space = 'CMYK'
-            if DEBUG:
-                print(f"CMYK color via {token}: {self.current_color}")
+            debug_log(f"CMYK color via {token}: {self.current_color}")
 
     def _handle_scene_color(self, token):
         """Handle all color operations (sc/SC/scn/SCN) based on current color space"""
@@ -331,16 +315,14 @@ class PDFOperationParser:
             gray = self.stack.pop()
             self.current_color = (gray,)  # Single value for grayscale
             self.color_space = 'Gray'
-            if DEBUG:
-                print(f"Grayscale color via {token}: {gray}")
+            debug_log(f"Grayscale color via {token}: {gray}")
 
     def _handle_fill_stroke_operation(self, token):
         """Handle fill and stroke operations (f/F/S/s/B/b/b*/B*)"""
         op_type = 'fill' if token in [b'f', b'F', b'b', b'B', b'b*', b'B*'] else 'stroke'
         
-        if DEBUG:
-            print(f"{op_type.capitalize()} operation with {self.color_space} color {self.current_color}")
-            print(f"Current rectangle: {self.current_rect}")
+        debug_log(f"{op_type.capitalize()} operation with {self.color_space} color {self.current_color}")
+        debug_log(f"Current rectangle: {self.current_rect}")
         
         operation = {
             'type': op_type,
@@ -428,8 +410,7 @@ class PDFOperationParser:
             # Handle scene color operations
             if token in [b'sc', b'SC', b'scn', b'SCN']:
                 if self.color_space is None:
-                    if DEBUG:
-                        print(f"Warning: Color operation {token} encountered but no color space has been set")
+                    debug_log(f"Warning: Color operation {token} encountered but no color space has been set")
                     i += 1
                     continue
                 self._handle_scene_color(token)
@@ -494,7 +475,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Analyze colors in PDF files')
     parser.add_argument('pdf_file', help='Path to the PDF file to analyze')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
-    return parser.parse_args()
+    args = parser.parse_args()
+    setup_logging(args.debug)
+    return args
 
 def _add_color_to_dict(color_dict, color_key, page_num, current_rect, op):
     """Add color operation to a dictionary"""
@@ -545,11 +528,10 @@ def extract_color_values(pdf_path, debug=False):
             is_within = (min_x - tolerance <= x <= max_x + tolerance and 
                         min_y - tolerance <= y <= max_y + tolerance)
             
-            if DEBUG:
-                print(f"Checking position ({pt_to_mm(x)}mm, {pt_to_mm(y)}mm) against MediaBox bounds:")
-                print(f"  X bounds: {pt_to_mm(min_x)}mm <= {pt_to_mm(x)}mm <= {pt_to_mm(max_x)}mm")
-                print(f"  Y bounds: {pt_to_mm(min_y)}mm <= {pt_to_mm(y)}mm <= {pt_to_mm(max_y)}mm")
-                print(f"  Result: {'within' if is_within else 'outside'}")
+            debug_log(f"Checking position ({pt_to_mm(x)}mm, {pt_to_mm(y)}mm) against MediaBox bounds:")
+            debug_log(f"  X bounds: {pt_to_mm(min_x)}mm <= {pt_to_mm(x)}mm <= {pt_to_mm(max_x)}mm")
+            debug_log(f"  Y bounds: {pt_to_mm(min_y)}mm <= {pt_to_mm(y)}mm <= {pt_to_mm(max_y)}mm")
+            debug_log(f"  Result: {'within' if is_within else 'outside'}")
             
             return is_within
         except (ValueError, TypeError):
@@ -569,23 +551,20 @@ def extract_color_values(pdf_path, debug=False):
                 (x + w, y + h)    # top-right
             ]
             
-            if DEBUG:
-                print(f"Checking rectangle: origin=({pt_to_mm(x)}mm, {pt_to_mm(y)}mm), size=({pt_to_mm(w)}mm, {pt_to_mm(h)}mm)")
-                print(f"Corners (mm): {[(pt_to_mm(cx), pt_to_mm(cy)) for cx, cy in corners]}")
+            debug_log(f"Checking rectangle: origin=({pt_to_mm(x)}mm, {pt_to_mm(y)}mm), size=({pt_to_mm(w)}mm, {pt_to_mm(h)}mm)")
+            debug_log(f"Corners (mm): {[(pt_to_mm(cx), pt_to_mm(cy)) for cx, cy in corners]}")
             
             # If any corner is within bounds, the rectangle is considered within bounds
             for cx, cy in corners:
                 if is_position_within_bounds(cx, cy, box):
-                    if DEBUG:
-                        print(f"Rectangle is within bounds (corner at {pt_to_mm(cx)}mm, {pt_to_mm(cy)}mm)")
+                    debug_log(f"Rectangle is within bounds (corner at {pt_to_mm(cx)}mm, {pt_to_mm(cy)}mm)")
                     return True
             
             # Also check if the rectangle completely contains the MediaBox
             box_x1, box_y1, box_x2, box_y2 = [float(v) for v in box]
             if (x <= box_x1 and y <= box_y1 and 
                 x + w >= box_x2 and y + h >= box_y2):
-                if DEBUG:
-                    print("Rectangle contains MediaBox")
+                debug_log("Rectangle contains MediaBox")
                 return True
             
             return False
@@ -612,11 +591,10 @@ def extract_color_values(pdf_path, debug=False):
             elif group_cs == '/DeviceGray':
                 color_spaces['__default__'] = 'Gray'
         
-        if DEBUG:
-            print(f"\n--- Processing content stream ---")
-            if hasattr(page, 'MediaBox'):
-                box = page.MediaBox
-                print(f"MediaBox: {pt_to_mm(box[0])}mm, {pt_to_mm(box[1])}mm, {pt_to_mm(box[2])}mm, {pt_to_mm(box[3])}mm")
+        debug_log(f"\n--- Processing content stream ---")
+        if hasattr(page, 'MediaBox'):
+            box = page.MediaBox
+            debug_log(f"MediaBox: {pt_to_mm(box[0])}mm, {pt_to_mm(box[1])}mm, {pt_to_mm(box[2])}mm, {pt_to_mm(box[3])}mm")
         
         # Create parser with color space definitions
         parser = PDFOperationParser(color_spaces=color_spaces)
@@ -635,8 +613,8 @@ def extract_color_values(pdf_path, debug=False):
                 
                 # Get the current rectangle from the operation
                 current_rect = op.get('current_rect')
-                if DEBUG and current_rect:
-                    print(f"Processing operation with rectangle/position: {current_rect}")
+                if current_rect:
+                   debug_log(f"Processing operation with rectangle/position: {current_rect}")
                 
                 # For text operations, check if the position is within bounds
                 position_in_bounds = True
@@ -645,8 +623,7 @@ def extract_color_values(pdf_path, debug=False):
                     if hasattr(page, 'MediaBox'):
                         box = page.MediaBox
                         position_in_bounds = is_position_within_bounds(x, y, box)
-                        if DEBUG:
-                            print(f"Text position in bounds: {position_in_bounds}")
+                        debug_log(f"Text position in bounds: {position_in_bounds}")
                 # For rectangles, use the existing bounds checking
                 elif current_rect and len(current_rect) == 4:
                     x, y, w, h = current_rect
@@ -661,8 +638,7 @@ def extract_color_values(pdf_path, debug=False):
                         gs_dict = page.Resources['/ExtGState'][gs_name]
                         if '/ca' in gs_dict:
                             current_opacity = round(float(gs_dict['/ca']) * 100)
-                            if DEBUG:
-                                print(f"Found opacity in ExtGState {gs_name}: {current_opacity}%")
+                            debug_log(f"Found opacity in ExtGState {gs_name}: {current_opacity}%")
                 
                 # Push current opacity to the stack
                 opacity_context.push_opacity(current_opacity, gs_name)
@@ -670,8 +646,7 @@ def extract_color_values(pdf_path, debug=False):
                 # Calculate effective opacity using the entire stack
                 effective_opacity = opacity_context.get_effective_opacity()
                 
-                if DEBUG:
-                    print(f"Opacity calculation: {' * '.join(f'{op}%' for op in opacity_context.opacity_stack)} = {effective_opacity}%")
+                debug_log(f"Opacity calculation: {' * '.join(f'{op}%' for op in opacity_context.opacity_stack)} = {effective_opacity}%")
                 
                 if op['color_space'] in ['CMYK', 'RGB']:
                     # Color space specific multiplier and target dict
@@ -681,8 +656,7 @@ def extract_color_values(pdf_path, debug=False):
                     color = tuple(round(c * multiplier) for c in color)
                     color_key = (color, effective_opacity)
                     
-                    if DEBUG:
-                        print(f"Adding {'in-bounds' if position_in_bounds else 'out-of-bounds'} {op['color_space']} color {color} with rect/position {current_rect}")
+                    debug_log(f"Adding {'in-bounds' if position_in_bounds else 'out-of-bounds'} {op['color_space']} color {color} with rect/position {current_rect}")
                     
                     _add_color_to_dict(target_dict, color_key, page_num, current_rect, op)
             
@@ -700,22 +674,19 @@ def extract_color_values(pdf_path, debug=False):
         
         for xobject_name in resources["/XObject"]:
             try:
-                if DEBUG:
-                    print(f"\n==== Processing XObject: {xobject_name} (level {nesting_level}) ====")
+                debug_log(f"\n==== Processing XObject: {xobject_name} (level {nesting_level}) ====")
                 obj = resources["/XObject"][xobject_name]
                 
                 if obj.get("/Subtype") == "/Form":
-                    if DEBUG:
-                        print("Found Form XObject")
+                    debug_log("Found Form XObject")
                     
                     # Get the frame's opacity from the parent page's ExtGState
                     frame_opacity = 100
                     if hasattr(page, 'Resources') and '/ExtGState' in page.Resources:
                         gs_dict = page.Resources['/ExtGState']
-                        if '/GS1' in gs_dict and '/ca' in gs_dict['/GS1']:  # The 80% opacity frame uses /GS1
+                        if '/GS1' in gs_dict and '/ca' in gs_dict['/GS1']:
                             frame_opacity = round(float(gs_dict['/GS1']['/ca']) * 100)
-                            if DEBUG:
-                                print(f"Found parent frame opacity: {frame_opacity}%")
+                            debug_log(f"Found parent frame opacity: {frame_opacity}%")
                     
                     # Get any additional opacity from the XObject's own ExtGState
                     xobject_opacity = 100
@@ -724,8 +695,7 @@ def extract_color_values(pdf_path, debug=False):
                         for gs_name, gs_obj in gs_dict.items():
                             if '/ca' in gs_obj:
                                 xobject_opacity = round(float(gs_obj['/ca']) * 100)
-                                if DEBUG:
-                                    print(f"Found XObject opacity: {xobject_opacity}%")
+                                debug_log(f"Found XObject opacity: {xobject_opacity}%")
                     
                     # Create a new opacity context that inherits from the parent
                     new_opacity_context = OpacityContext()
@@ -735,8 +705,7 @@ def extract_color_values(pdf_path, debug=False):
                     new_opacity_context.push_opacity(frame_opacity)
                     new_opacity_context.push_opacity(xobject_opacity)
                     
-                    if DEBUG:
-                        print(f"Current opacity stack: {new_opacity_context.opacity_stack}")
+                    debug_log(f"Current opacity stack: {new_opacity_context.opacity_stack}")
                     
                     # Process the XObject's content stream
                     if hasattr(obj, "read_bytes"):
@@ -746,30 +715,28 @@ def extract_color_values(pdf_path, debug=False):
                         # Recursively process any nested resources
                         if "/Resources" in obj:
                             process_resources(obj["/Resources"], obj, page_num, new_opacity_context, nesting_level + 1)
-                    
+                
             except Exception as e:
-                if DEBUG:
-                    print(f"Error processing XObject {xobject_name}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                debug_log(f"Error processing XObject {xobject_name}: {e}")
+                import traceback
+                traceback.print_exc()
     
     # Process each page
     for page_num, page in enumerate(pdf.pages, 1):
         try:
-            if DEBUG:
-                print(f"\nProcessing page {page_num}")
-                print(f"MediaBox: {page.MediaBox}")
-                print("\nPage Resources:")
-                for key in page.Resources.keys():
-                    print(f"Resource key: {key}")
-                    if key == '/XObject':
-                        print("XObjects found:")
-                        for xobj_key, xobj in page.Resources[key].items():
-                            print(f"  {xobj_key}:")
-                            print(f"    Type: {xobj.get('/Type', 'Not specified')}")
-                            print(f"    Subtype: {xobj.get('/Subtype', 'Not specified')}")
-                            if '/Resources' in xobj:
-                                print(f"    Has resources: {list(xobj['/Resources'].keys())}")
+            debug_log(f"\nProcessing page {page_num}")
+            debug_log(f"MediaBox: {page.MediaBox}")
+            debug_log("\nPage Resources:")
+            for key in page.Resources.keys():
+                debug_log(f"Resource key: {key}")
+                if key == '/XObject':
+                    debug_log("XObjects found:")
+                    for xobj_key, xobj in page.Resources[key].items():
+                        debug_log(f"  {xobj_key}:")
+                        debug_log(f"    Type: {xobj.get('/Type', 'Not specified')}")
+                        debug_log(f"    Subtype: {xobj.get('/Subtype', 'Not specified')}")
+                        if '/Resources' in xobj:
+                            debug_log(f"    Has resources: {list(xobj['/Resources'].keys())}")
             
             # Create opacity context for this page
             opacity_context = OpacityContext()
@@ -784,10 +751,9 @@ def extract_color_values(pdf_path, debug=False):
                 process_resources(page.Resources, page, page_num, opacity_context)
             
         except Exception as e:
-            print(f"Debug: Error processing page {page_num}: {e}", file=sys.stderr)
-            if DEBUG:
-                import traceback
-                traceback.print_exc()
+            debug_log(f"Error processing page {page_num}: {e}")
+            import traceback
+            traceback.print_exc()
     
     return dict(cmyk_colors), dict(rgb_colors), dict(out_of_bounds_cmyk), dict(out_of_bounds_rgb)
 
