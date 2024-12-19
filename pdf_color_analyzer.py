@@ -195,6 +195,130 @@ class PDFOperationParser:
             
         return text_content, i + 1  # i + 1 to skip the closing bracket
 
+    def _handle_text_operation(self):
+        """Handle text operations (Tj/TJ) and return the operation dictionary"""
+        if DEBUG:
+            print(f"Text operation with {self.color_space} color {self.current_color}")
+            print(f"Text position: {self.current_text_position}")
+            print(f"Text content: {self.current_text_content}")
+        
+        operation = {
+            'type': 'text',
+            'color': self.current_color,
+            'color_space': self.color_space,
+            'graphics_state': self.graphics_state,
+            'current_rect': self.current_text_position,
+            'text_position': self.current_text_position,
+            'text_content': self.current_text_content
+        }
+        
+        if DEBUG:
+            print(f"Added operation with text: {self.current_text_content}")
+        
+        self.current_text_content = None  # Reset text content
+        return operation
+
+    def _handle_color_space_operation(self, tokens, i):
+        """Handle color space operations and return the new index"""
+        color_space_name = tokens[i].decode('utf-8', 'ignore')
+        i += 1
+        # Skip whitespace
+        while i < len(tokens) and tokens[i].strip() == b'':
+            i += 1
+        
+        if i < len(tokens) and tokens[i].strip() in [b'cs', b'CS']:
+            # Direct device color space
+            if color_space_name == '/DeviceRGB':
+                self.color_space = 'RGB'
+            elif color_space_name == '/DeviceCMYK':
+                self.color_space = 'CMYK'
+            elif color_space_name == '/DeviceGray':
+                self.color_space = 'Gray'
+            # Named color space lookup
+            elif color_space_name in self.color_spaces:
+                self.color_space = self.color_spaces[color_space_name]
+            else:
+                raise ValueError(f"Unknown color space: {color_space_name}. Available color spaces: {self.color_spaces}")
+            
+            if DEBUG:
+                print(f"Color space changed to: {self.color_space} for {color_space_name}")
+            i += 1
+        
+        return i
+
+    def _handle_rectangle(self):
+        """Handle rectangle operation and store rectangle parameters"""
+        if len(self.stack) >= 4:
+            h = float(self.stack.pop())
+            w = float(self.stack.pop())
+            y = float(self.stack.pop())
+            x = float(self.stack.pop())
+            self.current_rect = (x, y, w, h)  # Store the current rectangle
+            if DEBUG:
+                print(f"Rectangle: {pt_to_mm(x)}mm, {pt_to_mm(y)}mm, {pt_to_mm(w)}mm x {pt_to_mm(h)}mm")
+                print(f"Storing rectangle: {self.current_rect}")
+
+    def _handle_rgb_color(self, token):
+        """Handle RGB color operations (rg/RG)"""
+        if len(self.stack) >= 3:
+            b = self.stack.pop()
+            g = self.stack.pop()
+            r = self.stack.pop()
+            self.current_color = (r, g, b)
+            self.color_space = 'RGB'
+            if DEBUG:
+                print(f"RGB color: {tuple(round(c * 100) for c in self.current_color)}")
+
+    def _handle_cmyk_color(self, token, stack_size=4):
+        """Handle CMYK color operations (k/K/sc/SC/scn/SCN)"""
+        if len(self.stack) >= stack_size:
+            if stack_size == 1:  # For the case of '1 scn'
+                value = self.stack.pop()
+                if value == 1:
+                    self.current_color = (0, 0, 0, 1)
+                    if DEBUG:
+                        print(f"Single value {token} interpreted as black: {self.current_color}")
+                    return
+                # If not a special case, restore the value and continue with normal processing
+                self.stack.append(value)
+                return
+            
+            k = self.stack.pop()
+            y = self.stack.pop()
+            m = self.stack.pop()
+            c = self.stack.pop()
+            self.current_color = (c, m, y, k)
+            self.color_space = 'CMYK'
+            if DEBUG:
+                print(f"CMYK color via {token}: {self.current_color}")
+
+    def _handle_scene_color(self, token):
+        """Handle all color operations (sc/SC/scn/SCN) based on current color space"""
+        # First ensure we have a color space
+        if self.color_space is None:
+            raise ValueError(f"Color operation {token} encountered but no color space has been set")
+        
+        if self.color_space == 'RGB':
+            if len(self.stack) >= 3:
+                b = self.stack.pop()
+                g = self.stack.pop()
+                r = self.stack.pop()
+                self.current_color = (r, g, b)
+                if DEBUG:
+                    rgb_255 = tuple(round(c * 255) for c in self.current_color)
+                    print(f"RGB color via {token}: {rgb_255}")
+        elif self.color_space == 'CMYK':
+            self._handle_cmyk_color(token)
+
+    def _handle_grayscale_color(self, token):
+        """Handle Grayscale color operations (g/G)"""
+        if len(self.stack) >= 1:
+            gray = self.stack.pop()
+            self.current_color = (gray,)  # Single value for grayscale
+            self.color_space = 'Gray'
+            if DEBUG:
+                print(f"Grayscale color via {token}: {gray}")
+
     def parse_operations(self, content):
         tokens = self._parse_tokens(content)
         
@@ -212,24 +336,8 @@ class PDFOperationParser:
             
             # When adding text operations
             elif token in [b'Tj', b'TJ']:
-                if DEBUG:
-                    print(f"Text operation with {self.color_space} color {self.current_color}")
-                    print(f"Text position: {self.current_text_position}")
-                    print(f"Text content: {self.current_text_content}")
-                
-                operation = {
-                    'type': 'text',
-                    'color': self.current_color,
-                    'color_space': self.color_space,
-                    'graphics_state': self.graphics_state,
-                    'current_rect': self.current_text_position,
-                    'text_position': self.current_text_position,
-                    'text_content': self.current_text_content
-                }
+                operation = self._handle_text_operation()
                 self.operations.append(operation)
-                if DEBUG:
-                    print(f"Added operation with text: {self.current_text_content}")
-                self.current_text_content = None  # Reset text content
             
             # Track text blocks
             elif token == b'BT':
@@ -241,106 +349,42 @@ class PDFOperationParser:
                 if DEBUG:
                     print("Exiting text block")
             
-            # For color operations without explicit color space
-            if token == b'k' or token == b'K':  # CMYK operations
+            # Handle CMYK color operations
+            if token in [b'k', b'K']:
                 if self.color_space is None:
                     self.color_space = 'CMYK'
                     if DEBUG:
                         print("Implicitly using CMYK color space for k/K operation")
-            elif token == b'g' or token == b'G':  # Gray operations
+                self._handle_cmyk_color(token)
+                i += 1
+                continue
+            elif token in [b'g', b'G']:
                 if self.color_space is None:
                     self.color_space = 'Gray'
                     if DEBUG:
                         print("Implicitly using Gray color space for g/G operation")
+                self._handle_grayscale_color(token)
+                i += 1
+                continue
             
-            # For any color operation, warn if we don't have a color space but continue processing
-            if token in [b'scn', b'SCN', b'sc', b'SC', b'rg', b'RG', b'k', b'K', b'g', b'G']:
+            # Handle color space operations
+            if token.startswith(b'/CS') or token.startswith(b'/Device'):
+                i = self._handle_color_space_operation(tokens, i)
+                continue
+            
+            # Handle scene color operations
+            if token in [b'sc', b'SC', b'scn', b'SCN']:
                 if self.color_space is None:
                     if DEBUG:
                         print(f"Warning: Color operation {token} encountered but no color space has been set")
-                    # Skip this color operation
-                    if token in [b'k', b'K']:  # CMYK operations
-                        if len(self.stack) >= 4:
-                            self.stack = self.stack[:-4]  # Remove the color values from stack
-                    elif token in [b'rg', b'RG']:  # RGB operations
-                        if len(self.stack) >= 3:
-                            self.stack = self.stack[:-3]
-                    elif token in [b'g', b'G']:  # Gray operations
-                        if len(self.stack) >= 1:
-                            self.stack = self.stack[:-1]
                     i += 1
                     continue
-            
-            # Handle RGB values set via scn after CS0
-            if token == b'scn' and self.color_space == 'RGB':
-                if len(self.stack) >= 3:
-                    b = self.stack.pop()
-                    g = self.stack.pop()
-                    r = self.stack.pop()
-                    self.current_color = (r, g, b)
-                    if DEBUG:
-                        rgb_255 = tuple(round(c * 255) for c in self.current_color)
-                        print(f"RGB color via scn: {rgb_255}")
+                self._handle_scene_color(token)
                 i += 1
                 continue
-            
-            if token == b'scn' and self.color_space == 'CMYK':  # Color values in CMYK space
-                if len(self.stack) >= 1:  # For the case of '1 scn'
-                    value = self.stack.pop()
-                    if value == 1:
-                        self.current_color = (0, 0, 0, 1)
-                        if DEBUG:
-                            print(f"Single value scn interpreted as black: {self.current_color}")
-                elif len(self.stack) >= 4:
-                    k = self.stack.pop()
-                    y = self.stack.pop()
-                    m = self.stack.pop()
-                    c = self.stack.pop()
-                    self.current_color = (c, m, y, k)
-                    if DEBUG:
-                        print(f"CMYK color space color: {self.current_color}")
-                i += 1
-                continue
-            
-            if token.startswith(b'/CS') or token.startswith(b'/Device'):
-                color_space_name = token.decode('utf-8', 'ignore')
-                i += 1
-                # Skip whitespace
-                while i < len(tokens) and tokens[i].strip() == b'':
-                    i += 1
-                if i < len(tokens) and tokens[i].strip() in [b'cs', b'CS']:
-                    # Direct device color space
-                    if color_space_name == '/DeviceRGB':
-                        self.color_space = 'RGB'
-                    elif color_space_name == '/DeviceCMYK':
-                        self.color_space = 'CMYK'
-                    elif color_space_name == '/DeviceGray':
-                        self.color_space = 'Gray'
-                    # Named color space lookup
-                    elif color_space_name in self.color_spaces:
-                        self.color_space = self.color_spaces[color_space_name]
-                    else:
-                        raise ValueError(f"Unknown color space: {color_space_name}. Available color spaces: {self.color_spaces}")
-                    
-                    if DEBUG:
-                        print(f"Color space changed to: {self.color_space} for {color_space_name}")
-                    i += 1
-                    continue
-            
-            # For any color operation, ensure we have a color space
-            if token in [b'scn', b'SCN', b'sc', b'SC', b'rg', b'RG', b'k', b'K', b'g', b'G']:
-                if self.color_space is None:
-                    raise ValueError(f"Color operation {token} encountered but no color space has been set")
             
             if token == b'rg' or token == b'RG':  # RGB color
-                if len(self.stack) >= 3:
-                    b = self.stack.pop()
-                    g = self.stack.pop()
-                    r = self.stack.pop()
-                    self.current_color = (r, g, b)
-                    self.color_space = 'RGB'
-                    if DEBUG:
-                        print(f"RGB color: {tuple(round(c * 100) for c in self.current_color)}")
+                self._handle_rgb_color(token)
                 i += 1
                 continue
             
@@ -356,74 +400,7 @@ class PDFOperationParser:
             
             # When processing rectangle operations
             elif token == b're':
-                # Get the rectangle parameters
-                if len(self.stack) >= 4:
-                    h = float(self.stack.pop())
-                    w = float(self.stack.pop())
-                    y = float(self.stack.pop())
-                    x = float(self.stack.pop())
-                    self.current_rect = (x, y, w, h)  # Store the current rectangle
-                    if DEBUG:
-                        print(f"Rectangle: {pt_to_mm(x)}mm, {pt_to_mm(y)}mm, {pt_to_mm(w)}mm x {pt_to_mm(h)}mm")
-                        print(f"Storing rectangle: {self.current_rect}")
-            
-            elif token == b'k':  # CMYK color
-                if len(self.stack) >= 4:
-                    k = self.stack.pop()
-                    y = self.stack.pop()
-                    m = self.stack.pop()
-                    c = self.stack.pop()
-                    self.current_color = (c, m, y, k)
-                    self.color_space = 'CMYK'
-                    if DEBUG:
-                        print(f"CMYK color: {self.current_color}")
-            
-            elif token == b'K':  # CMYK color for stroke
-                if len(self.stack) >= 4:
-                    k = self.stack.pop()
-                    y = self.stack.pop()
-                    m = self.stack.pop()
-                    c = self.stack.pop()
-                    self.current_color = (c, m, y, k)
-                    self.color_space = 'CMYK'
-                    if DEBUG:
-                        print(f"CMYK stroke color: {self.current_color}")
-            
-            elif token == b'g':  # Grayscale
-                if len(self.stack) >= 1:
-                    gray = self.stack.pop()
-                    self.current_color = (0, 0, 0, 1-gray)  # Convert to CMYK
-                    self.color_space = 'CMYK'
-                    if DEBUG:
-                        print(f"Grayscale {gray} converted to CMYK: {self.current_color}")
-            
-            elif token == b'G':  # Grayscale for stroke
-                if len(self.stack) >= 1:
-                    gray = self.stack.pop()
-                    self.current_color = (0, 0, 0, 1-gray)  # Convert to CMYK
-                    self.color_space = 'CMYK'
-                    if DEBUG:
-                        print(f"Grayscale stroke {gray} converted to CMYK: {self.current_color}")
-            
-            elif token == b'sc' or token == b'scn':  # Color in current color space
-                if len(self.stack) >= 4 and self.color_space == 'CMYK':
-                    k = self.stack.pop()
-                    y = self.stack.pop()
-                    m = self.stack.pop()
-                    c = self.stack.pop()
-                    self.current_color = (c, m, y, k)
-                    if DEBUG:
-                        print(f"Color space color: {self.current_color}")
-            
-            elif token == b'SC' or token == b'SCN':  # Stroke color in current color space
-                if len(self.stack) >= 4 and self.color_space == 'CMYK':
-                    k = self.stack.pop()
-                    y = self.stack.pop()
-                    m = self.stack.pop()
-                    c = self.stack.pop()
-                    self.current_color = (c, m, y, k)
-                    if DEBUG:
-                        print(f"Color space stroke color: {self.current_color}")
+                self._handle_rectangle()    
             
             # Track text matrix position (Tm operator)
             if token == b'Tm':
