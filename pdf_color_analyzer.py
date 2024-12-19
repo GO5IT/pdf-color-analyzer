@@ -135,9 +135,6 @@ class PDFOperationParser:
         self.current_color = None
         self.color_space = None
         self.operations = []
-        self.is_clipping = False
-        self.is_container = False
-        self.path_in_progress = False
         self.graphics_state = None
         self.current_rect = None
         self.color_spaces = color_spaces or {}
@@ -467,8 +464,6 @@ class PDFOperationParser:
 
         return {
             'operations': self.operations,
-            'is_clipping': self.is_clipping,
-            'is_container': self.is_container,
             'color_space': self.color_space,
             'current_color': self.current_color,
             'graphics_state': self.graphics_state
