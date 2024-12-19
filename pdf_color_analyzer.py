@@ -396,7 +396,7 @@ class PDFOperationParser:
                     'color': self.current_color,
                     'color_space': self.color_space,
                     'graphics_state': self.graphics_state,
-                    'current_rect': None,
+                    'current_rect': self.current_text_position,
                     'text_position': self.current_text_position
                 }
                 self.operations.append(operation)
@@ -467,7 +467,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Analyze colors in PDF files')
     parser.add_argument('pdf_file', help='Path to the PDF file to analyze')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
-    parser.add_argument('--json', action='store_true', help='Output in JSON format')
     return parser.parse_args()
 
 def extract_color_values(pdf_path, debug=False):
@@ -972,129 +971,100 @@ if __name__ == "__main__":
     try:
         cmyk_colors, rgb_colors, out_of_bounds_cmyk, out_of_bounds_rgb = extract_color_values(args.pdf_file, debug=args.debug)
         
-        if args.json:
-            result = {"pages": {}}
-            
-            # Debug output
-            if args.debug:
-                print("\nCollected colors:")
-                print(f"CMYK colors: {cmyk_colors}")
-                print(f"RGB colors: {rgb_colors}")
-            
-            # Combine all colors into page-based structure
-            all_colors = []
-            # Add CMYK colors
-            for (color, opacity), (pages, rects) in cmyk_colors.items():
-                # Remove duplicate rectangles while preserving order
-                unique_rects = []
-                seen = set()
+        result = {"pages": {}}
+        
+        # Debug output
+        if args.debug:
+            print("\nCollected colors:", file=sys.stderr)
+            print(f"CMYK colors: {cmyk_colors}", file=sys.stderr)
+            print(f"RGB colors: {rgb_colors}", file=sys.stderr)
+        
+        # Combine all colors into page-based structure
+        all_colors = []
+        # Add CMYK colors
+        for (color, opacity), (pages, rects) in cmyk_colors.items():
+            unique_rects = []
+            seen = set()
+            for rect in rects:
+                rect_tuple = tuple(rect) if rect else None
+                if rect_tuple not in seen:
+                    seen.add(rect_tuple)
+                    unique_rects.append(rect)
+            all_colors.append((color, opacity, pages, "CMYK", False, unique_rects))
+        
+        # Add RGB colors
+        for (color, opacity), (pages, rects) in rgb_colors.items():
+            unique_rects = []
+            seen = set()
+            for rect in rects:
+                rect_tuple = tuple(rect) if rect else None
+                if rect_tuple not in seen:
+                    seen.add(rect_tuple)
+                    unique_rects.append(rect)
+            all_colors.append((color, opacity, pages, "RGB", False, unique_rects))
+        
+        # Add out of bounds colors
+        for (color, opacity), (pages, rects) in out_of_bounds_cmyk.items():
+            unique_rects = []
+            seen = set()
+            for rect in rects:
+                rect_tuple = tuple(rect) if rect else None
+                if rect_tuple not in seen:
+                    seen.add(rect_tuple)
+                    unique_rects.append(rect)
+            all_colors.append((color, opacity, pages, "CMYK", True, unique_rects))
+        
+        for (color, opacity), (pages, rects) in out_of_bounds_rgb.items():
+            unique_rects = []
+            seen = set()
+            for rect in rects:
+                rect_tuple = tuple(rect) if rect else None
+                if rect_tuple not in seen:
+                    seen.add(rect_tuple)
+                    unique_rects.append(rect)
+            all_colors.append((color, opacity, pages, "RGB", True, unique_rects))
+        
+        # Group by page
+        for color, opacity, pages, colorspace, out_of_bounds, rects in all_colors:
+            for page in pages:
+                if str(page) not in result["pages"]:
+                    result["pages"][str(page)] = {"colors": []}
+                
+                # Create a color entry for each rectangle or text position
                 for rect in rects:
-                    rect_tuple = tuple(rect) if rect else None
-                    if rect_tuple not in seen:
-                        seen.add(rect_tuple)
-                        unique_rects.append(rect)
-                all_colors.append((color, opacity, pages, "CMYK", False, unique_rects))
-            
-            # Add RGB colors
-            for (color, opacity), (pages, rects) in rgb_colors.items():
-                # Remove duplicate rectangles while preserving order
-                unique_rects = []
-                seen = set()
-                for rect in rects:
-                    rect_tuple = tuple(rect) if rect else None
-                    if rect_tuple not in seen:
-                        seen.add(rect_tuple)
-                        unique_rects.append(rect)
-                all_colors.append((color, opacity, pages, "RGB", False, unique_rects))
-            
-            # Add out of bounds colors (if needed)
-            for (color, opacity), (pages, rects) in out_of_bounds_cmyk.items():
-                unique_rects = []
-                seen = set()
-                for rect in rects:
-                    rect_tuple = tuple(rect) if rect else None
-                    if rect_tuple not in seen:
-                        seen.add(rect_tuple)
-                        unique_rects.append(rect)
-                all_colors.append((color, opacity, pages, "CMYK", True, unique_rects))
-            
-            for (color, opacity), (pages, rects) in out_of_bounds_rgb.items():
-                unique_rects = []
-                seen = set()
-                for rect in rects:
-                    rect_tuple = tuple(rect) if rect else None
-                    if rect_tuple not in seen:
-                        seen.add(rect_tuple)
-                        unique_rects.append(rect)
-                all_colors.append((color, opacity, pages, "RGB", True, unique_rects))
-            
-            # Group by page
-            for color, opacity, pages, colorspace, out_of_bounds, rects in all_colors:
-                for page in pages:
-                    if str(page) not in result["pages"]:
-                        result["pages"][str(page)] = {"colors": []}
+                    color_info = {
+                        "colorspace": colorspace,
+                        "value": list(color),
+                        "opacity": opacity,
+                        "out_of_bounds": out_of_bounds
+                    }
                     
-                    # Create a color entry for each rectangle or text position
-                    for rect in rects:
-                        color_info = {
-                            "colorspace": colorspace,
-                            "value": list(color),
-                            "opacity": opacity,
-                            "out_of_bounds": out_of_bounds
-                        }
-                        
-                        # Add bounds if they exist
-                        if rect is not None:
-                            try:
-                                if isinstance(rect, tuple) and len(rect) == 2:  # Text position
-                                    x, y = rect
-                                    color_info["bounds"] = {
-                                        "x": pt_to_mm(x),
-                                        "y": pt_to_mm(y)
-                                    }
-                                elif isinstance(rect, tuple) and len(rect) == 4:  # Rectangle
-                                    x, y, w, h = rect
-                                    color_info["bounds"] = {
-                                        "x": pt_to_mm(x),
-                                        "y": pt_to_mm(y),
-                                        "width": pt_to_mm(w),
-                                        "height": pt_to_mm(h)
-                                    }
-                            except Exception as e:
-                                if args.debug:
-                                    print(f"Error processing bounds {rect}: {e}")
-                        
-                        result["pages"][str(page)]["colors"].append(color_info)
-            
-            print(json.dumps(result, indent=2))
-        else:
-            # Original output format
-            if not any([cmyk_colors, rgb_colors, out_of_bounds_cmyk, out_of_bounds_rgb]):
-                print("No colors found in vector content.")
-            else:
-                if cmyk_colors:
-                    print(f"\nCMYK colors found within bounds in {args.pdf_file}:")
-                    for (color, opacity), (pages, rects) in sorted(cmyk_colors.items()):
-                        c, m, y, k = color
-                        print(f"CMYK({c}, {m}, {y}, {k}) at {opacity}% opacity on pages {sorted(set(pages))}")
-                
-                if out_of_bounds_cmyk:
-                    print(f"\nCMYK colors found outside bounds in {args.pdf_file}:")
-                    for (color, opacity), (pages, rects) in sorted(out_of_bounds_cmyk.items()):
-                        c, m, y, k = color
-                        print(f"CMYK({c}, {m}, {y}, {k}) at {opacity}% opacity on pages {sorted(set(pages))}")
-                
-                if rgb_colors:
-                    print(f"\nRGB colors found within bounds in {args.pdf_file}:")
-                    for (color, opacity), (pages, rects) in sorted(rgb_colors.items()):
-                        r, g, b = color
-                        print(f"RGB({r}, {g}, {b}) at {opacity}% opacity on pages {sorted(set(pages))}")
-                
-                if out_of_bounds_rgb:
-                    print(f"\nRGB colors found outside bounds in {args.pdf_file}:")
-                    for (color, opacity), (pages, rects) in sorted(out_of_bounds_rgb.items()):
-                        r, g, b = color
-                        print(f"RGB({r}, {g}, {b}) at {opacity}% opacity on pages {sorted(set(pages))}")
+                    # Add bounds if they exist
+                    if rect is not None:
+                        try:
+                            if isinstance(rect, tuple) and len(rect) == 2:  # Text position
+                                x, y = rect
+                                color_info["bounds"] = {
+                                    "x": pt_to_mm(x),
+                                    "y": pt_to_mm(y),
+                                    "type": "text"  # Add this to distinguish text positions
+                                }
+                            elif isinstance(rect, tuple) and len(rect) == 4:  # Rectangle
+                                x, y, w, h = rect
+                                color_info["bounds"] = {
+                                    "x": pt_to_mm(x),
+                                    "y": pt_to_mm(y),
+                                    "width": pt_to_mm(w),
+                                    "height": pt_to_mm(h),
+                                    "type": "rectangle"  # Add this to distinguish rectangles
+                                }
+                        except Exception as e:
+                            if args.debug:
+                                print(f"Error processing bounds {rect}: {e}", file=sys.stderr)
+                    
+                    result["pages"][str(page)]["colors"].append(color_info)
+        
+        print(json.dumps(result, indent=2))
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
