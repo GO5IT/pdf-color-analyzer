@@ -150,8 +150,8 @@ class PDFOperationParser:
             if DEBUG:
                 print(f"Using default color space: {self.color_space}")
     
-    def parse_operations(self, content):
-        # Modified regex to capture all token types while keeping parenthetical content together
+    def _parse_tokens(self, content):
+        """Extract tokens from PDF content stream"""
         tokens = re.findall(rb'''
             \([^)]*\)          # Text content in parentheses
             |/\w+              # Names starting with /
@@ -165,6 +165,39 @@ class PDFOperationParser:
             print("\nAll tokens:")
             print(tokens)
         
+        return tokens
+
+    def _parse_text_array(self, tokens, start_index):
+        """Process a text array starting at the given index and return the assembled text and new index"""
+        if DEBUG:
+            print("Starting text array processing")
+        
+        text_parts = []
+        i = start_index
+        
+        while i < len(tokens) and tokens[i].strip() != b']':
+            current_token = tokens[i].strip()
+            
+            # Check if this is a text string (starts with parenthesis)
+            if current_token.startswith(b'(') and current_token.endswith(b')'):
+                # Remove the parentheses and decode
+                text = current_token[1:-1].decode('utf-8', errors='replace')
+                if DEBUG:
+                    print(f"Found text part: {text}")
+                text_parts.append(text)
+            
+            i += 1
+        
+        # Join text parts without extra spaces
+        text_content = ''.join(text_parts).replace('  ', ' ').strip()
+        if DEBUG:
+            print(f"Assembled text content: {text_content}")
+            
+        return text_content, i + 1  # i + 1 to skip the closing bracket
+
+    def parse_operations(self, content):
+        tokens = self._parse_tokens(content)
+        
         i = 0
         while i < len(tokens):
             token = tokens[i].strip()
@@ -174,28 +207,8 @@ class PDFOperationParser:
             
             # When processing text arrays
             if token == b'[':
-                if DEBUG:
-                    print("Starting text array processing")
-                text_parts = []
-                i += 1
-                
-                while i < len(tokens) and tokens[i].strip() != b']':
-                    current_token = tokens[i].strip()
-                    
-                    # Check if this is a text string (starts with parenthesis)
-                    if current_token.startswith(b'(') and current_token.endswith(b')'):
-                        # Remove the parentheses and decode
-                        text = current_token[1:-1].decode('utf-8', errors='replace')
-                        if DEBUG:
-                            print(f"Found text part: {text}")
-                        text_parts.append(text)
-                    
-                    i += 1
-                
-                # Join text parts without extra spaces
-                self.current_text_content = ''.join(text_parts).replace('  ', ' ').strip()
-                if DEBUG:
-                    print(f"Assembled text content: {self.current_text_content}")
+                self.current_text_content, i = self._parse_text_array(tokens, i + 1)
+                continue
             
             # When adding text operations
             elif token in [b'Tj', b'TJ']:
