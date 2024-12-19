@@ -195,8 +195,31 @@ class PDFOperationParser:
             
         return text_content, i + 1  # i + 1 to skip the closing bracket
 
-    def _handle_text_operation(self):
-        """Handle text operations (Tj/TJ) and return the operation dictionary"""
+    def _handle_text_block(self, token):
+        """Handle text block operations (BT/ET)"""
+        if token == b'BT':
+            self.in_text_block = True
+            if DEBUG:
+                print("Entering text block")
+        elif token == b'ET':
+            self.in_text_block = False
+            if DEBUG:
+                print("Exiting text block")
+
+    def _handle_text_position(self, token):
+        """Handle text position operations (Tm)"""
+        if len(self.stack) >= 6:
+            # Tm takes 6 numbers: a b c d e f
+            # where e and f are the x,y position
+            f = self.stack.pop()  # y position
+            e = self.stack.pop()  # x position
+            self.stack = self.stack[:-4]  # Remove a b c d
+            self.current_text_position = (e, f)
+            if DEBUG:
+                print(f"Text position set to: ({pt_to_mm(e)}mm, {pt_to_mm(f)}mm)")
+
+    def _handle_text_operation(self, token):
+        """Handle text showing operations (Tj/TJ)"""
         if DEBUG:
             print(f"Text operation with {self.color_space} color {self.current_color}")
             print(f"Text position: {self.current_text_position}")
@@ -212,11 +235,12 @@ class PDFOperationParser:
             'text_content': self.current_text_content
         }
         
+        self.operations.append(operation)
+        
         if DEBUG:
             print(f"Added operation with text: {self.current_text_content}")
         
         self.current_text_content = None  # Reset text content
-        return operation
 
     def _handle_color_space_operation(self, tokens, i):
         """Handle color space operations and return the new index"""
@@ -267,7 +291,8 @@ class PDFOperationParser:
             self.current_color = (r, g, b)
             self.color_space = 'RGB'
             if DEBUG:
-                print(f"RGB color: {tuple(round(c * 100) for c in self.current_color)}")
+                rgb_255 = tuple(round(c * 255) for c in self.current_color)
+                print(f"RGB color via {token}: {rgb_255}")
 
     def _handle_cmyk_color(self, token, stack_size=4):
         """Handle CMYK color operations (k/K/sc/SC/scn/SCN)"""
@@ -299,14 +324,7 @@ class PDFOperationParser:
             raise ValueError(f"Color operation {token} encountered but no color space has been set")
         
         if self.color_space == 'RGB':
-            if len(self.stack) >= 3:
-                b = self.stack.pop()
-                g = self.stack.pop()
-                r = self.stack.pop()
-                self.current_color = (r, g, b)
-                if DEBUG:
-                    rgb_255 = tuple(round(c * 255) for c in self.current_color)
-                    print(f"RGB color via {token}: {rgb_255}")
+            self._handle_rgb_color(token)
         elif self.color_space == 'CMYK':
             self._handle_cmyk_color(token)
 
@@ -319,6 +337,39 @@ class PDFOperationParser:
             if DEBUG:
                 print(f"Grayscale color via {token}: {gray}")
 
+    def _handle_fill_stroke_operation(self, token):
+        """Handle fill and stroke operations (f/F/S/s/B/b/b*/B*)"""
+        op_type = 'fill' if token in [b'f', b'F', b'b', b'B', b'b*', b'B*'] else 'stroke'
+        
+        if DEBUG:
+            print(f"{op_type.capitalize()} operation with {self.color_space} color {self.current_color}")
+            print(f"Current rectangle: {self.current_rect}")
+        
+        operation = {
+            'type': op_type,
+            'color': self.current_color,
+            'color_space': self.color_space,
+            'graphics_state': self.graphics_state,
+            'current_rect': self.current_rect if not self.in_text_block else None
+        }
+        
+        self.operations.append(operation)
+        
+        # Only reset rectangle for non-text operations
+        if not self.in_text_block:
+            self.current_rect = None
+
+    def _handle_xobject(self, token):
+        """Handle XObject operations (Do)"""
+        # Keep the current color state for the XObject
+        operation = {
+            'color': self.current_color,
+            'color_space': self.color_space,
+            'type': 'xobject',
+            'graphics_state': self.graphics_state
+        }
+        self.operations.append(operation)
+
     def parse_operations(self, content):
         tokens = self._parse_tokens(content)
         
@@ -328,45 +379,50 @@ class PDFOperationParser:
             if not token:
                 i += 1
                 continue
-            
-            # When processing text arrays
+
+            # Handle text array operations
             if token == b'[':
                 self.current_text_content, i = self._parse_text_array(tokens, i + 1)
                 continue
-            
-            # When adding text operations
-            elif token in [b'Tj', b'TJ']:
-                operation = self._handle_text_operation()
-                self.operations.append(operation)
-            
-            # Track text blocks
-            elif token == b'BT':
-                self.in_text_block = True
-                if DEBUG:
-                    print("Entering text block")
-            elif token == b'ET':
-                self.in_text_block = False
-                if DEBUG:
-                    print("Exiting text block")
-            
-            # Handle CMYK color operations
+
+            # Handle text block operations
+            if token in [b'BT', b'ET']:
+                self._handle_text_block(token)
+                i += 1
+                continue
+
+            # Handle text position operations
+            if token == b'Tm':
+                self._handle_text_position(token)
+                i += 1
+                continue
+
+            # Handle text showing operations
+            if token in [b'Tj', b'TJ']:
+                self._handle_text_operation(token)
+                i += 1
+                continue
+
+            # Handle CMYK, Grayscale, and RGB color operations
             if token in [b'k', b'K']:
-                if self.color_space is None:
-                    self.color_space = 'CMYK'
-                    if DEBUG:
-                        print("Implicitly using CMYK color space for k/K operation")
                 self._handle_cmyk_color(token)
                 i += 1
                 continue
             elif token in [b'g', b'G']:
-                if self.color_space is None:
-                    self.color_space = 'Gray'
-                    if DEBUG:
-                        print("Implicitly using Gray color space for g/G operation")
                 self._handle_grayscale_color(token)
                 i += 1
                 continue
-            
+            elif token in [b'rg', b'RG']:
+                self._handle_rgb_color(token)
+                i += 1
+                continue
+
+            # Handle fill and stroke operations
+            if token in [b'f', b'F', b'S', b's', b'B', b'b', b'b*', b'B*']:
+                self._handle_fill_stroke_operation(token)
+                i += 1
+                continue
+
             # Handle color space operations
             if token.startswith(b'/CS') or token.startswith(b'/Device'):
                 i = self._handle_color_space_operation(tokens, i)
@@ -382,70 +438,33 @@ class PDFOperationParser:
                 self._handle_scene_color(token)
                 i += 1
                 continue
-            
-            if token == b'rg' or token == b'RG':  # RGB color
-                self._handle_rgb_color(token)
+
+            # Handle XObject operations
+            if token == b'Do':
+                self._handle_xobject(token)
                 i += 1
                 continue
-            
-            if re.match(rb'[+-]?(?:\d*\.\d+|\d+\.?)', token):
-                self.stack.append(float(token))
-                i += 1
-                continue
-            
+
+            # Handle graphics state operations
             if token.startswith(b'/GS'):
                 self.graphics_state = token
                 i += 2
                 continue
-            
-            # When processing rectangle operations
-            elif token == b're':
-                self._handle_rectangle()    
-            
-            # Track text matrix position (Tm operator)
-            if token == b'Tm':
-                if len(self.stack) >= 6:
-                    # Tm takes 6 numbers: a b c d e f
-                    # where e and f are the x,y position
-                    f = self.stack.pop()  # y position
-                    e = self.stack.pop()  # x position
-                    self.stack = self.stack[:-4]  # Remove a b c d
-                    self.current_text_position = (e, f)
-                    if DEBUG:
-                        print(f"Text position set to: ({pt_to_mm(e)}mm, {pt_to_mm(f)}mm)")
-            
-            # When adding a fill or stroke operation
-            elif token in [b'f', b'F', b'S', b's', b'B', b'b', b'b*', b'B*', b'Tj', b'TJ']:
-                op_type = 'text' if token in [b'Tj', b'TJ'] else ('fill' if token in [b'f', b'F', b'b', b'B', b'b*', b'B*'] else 'stroke')
-                if DEBUG:
-                    print(f"{op_type.capitalize()} operation with {self.color_space} color {self.current_color}")
-                    print(f"Current rectangle: {self.current_rect}")
-                
-                # Add operation for both regular shapes and text
-                operation = {
-                    'type': op_type,
-                    'color': self.current_color,
-                    'color_space': self.color_space,
-                    'graphics_state': self.graphics_state,
-                    'current_rect': self.current_rect if not self.in_text_block else None
-                }
-                self.operations.append(operation)
-                
-                # Only reset rectangle for non-text operations
-                if not self.in_text_block:
-                    self.current_rect = None
-            
-            elif token == b'Do':  # XObject reference
-                # Keep the current color state for the XObject
-                self.operations.append({
-                    'color': self.current_color,
-                    'color_space': self.color_space,
-                    'type': 'xobject',
-                    'graphics_state': self.graphics_state
-                })
-            
+
+            # Handle rectangle operations
+            if token == b're':
+                self._handle_rectangle()
+                i += 1
+                continue
+
+            # Handle numeric values
+            if re.match(rb'[+-]?(?:\d*\.\d+|\d+\.?)', token):
+                self.stack.append(float(token))
+                i += 1
+                continue
+
             i += 1
-        
+
         return {
             'operations': self.operations,
             'is_clipping': self.is_clipping,
