@@ -2,6 +2,8 @@
 
 A Python tool for analyzing colours in PDF files. It extracts all colours used within vector content inside and outside of the document's boundaries (media box), including their positions, opacity values, and whether they're used in text or shapes.
 
+Note: it won't get colours from inside embedded raster images - only from text and shapes / paths.
+
 We made this as part of an automated system to check whether a PDF is suitable for use in creating a brass 
 stamp - we needed to ensure that files only contain (0,0,0,0) or (0,0,0,100) CMYK values at 100% opacity.
 

@@ -593,8 +593,11 @@ def extract_color_values(pdf_path, debug=False):
         
         debug_log(f"\n--- Processing content stream ---")
         if hasattr(page, 'MediaBox'):
-            box = page.MediaBox
-            debug_log(f"MediaBox: {pt_to_mm(box[0])}mm, {pt_to_mm(box[1])}mm, {pt_to_mm(box[2])}mm, {pt_to_mm(box[3])}mm")
+            try:
+                box = page.MediaBox
+                debug_log(f"MediaBox: {pt_to_mm(box[0])}mm, {pt_to_mm(box[1])}mm, {pt_to_mm(box[2])}mm, {pt_to_mm(box[3])}mm")
+            except Exception as e:
+                debug_log(f"MediaBox: Unable to display MediaBox ({e})")
         
         # Create parser with color space definitions
         parser = PDFOperationParser(color_spaces=color_spaces)
@@ -725,7 +728,11 @@ def extract_color_values(pdf_path, debug=False):
     for page_num, page in enumerate(pdf.pages, 1):
         try:
             debug_log(f"\nProcessing page {page_num}")
-            debug_log(f"MediaBox: {page.MediaBox}")
+            try:
+                box = page.MediaBox
+                debug_log(f"MediaBox: {pt_to_mm(box[0])}mm, {pt_to_mm(box[1])}mm, {pt_to_mm(box[2])}mm, {pt_to_mm(box[3])}mm")
+            except Exception as e:
+                debug_log(f"MediaBox: Unable to display MediaBox ({e})")
             debug_log("\nPage Resources:")
             for key in page.Resources.keys():
                 debug_log(f"Resource key: {key}")
