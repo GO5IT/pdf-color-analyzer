@@ -40,8 +40,18 @@ Option 2: Manual installation:
 
 2. Install required packages:
    ```bash
-   pip install pikepdf
+   pip install -r requirements.txt
    ```
+
+### Troubleshooting Installation
+
+If you encounter issues with a broken virtual environment (e.g., `ModuleNotFoundError` even though packages are installed), you can force a reinstall:
+
+```bash
+./install.sh --force
+```
+
+The install script will automatically detect and fix broken installations, or you can use `--force` to explicitly reinstall everything.
 
 ## Usage
 
